@@ -95,3 +95,22 @@ int tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_N
     if(n1 == NULL && n2 == NULL)return FAILURE;
     return n1->delay;
 }
+
+void tp_distory(tp_sw sw_list[SW_NUM])
+{
+    tp_sw* tmp;
+    tp_link * next_tmp1, * next_tmp2;
+    int i = 0;
+
+    for(i=0; i<SW_NUM; i++)
+    {
+        next_tmp1 = sw_list[i].list_link;
+        while(next_tmp1 != NULL)
+        {
+            next_tmp2 = next_tmp1->next;
+            free(next_tmp1);
+            next_tmp1 = next_tmp2;
+        }
+        sw_list[i].list_link = NULL;
+    }
+}

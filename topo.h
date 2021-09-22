@@ -74,9 +74,15 @@ int tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp
 /**
  * get a link delay in topo
  * @sw_dpid: switch id
- * @sw_list: 想要加的目标列表
+ * @sw_list: 目标列表
  * @return: success delay, Failure -1
  */
 int tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
+
+/**
+ * Destroys and cleans up topo.
+ * @sw_list: 目标列表
+ */
+void tp_distory(tp_sw sw_list[SW_NUM]);
 
 #endif

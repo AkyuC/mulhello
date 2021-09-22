@@ -35,9 +35,9 @@
 #include <pthread.h>
 #include <signal.h>
 
-#include <topo.h>
+#include "topo.h"
 
-// #define SERVER_IP "192.168.10.118"
+
 #define CONF_FILE_PATH "/home/ctrl_connect"
 #define PROXY_PORT 2345  // 数据库监听的端口
 #define SLOT_LiSTEN_PORT 12000  // 本地时间片切换时，需要知道时间片切换，收消息的套接字
@@ -49,6 +49,7 @@ struct event *hello_timer;
 struct mul_app_client_cb hello_app_cbs;
 
 char local_ip[20] = "192.168.67.";  // 本地控制器ip
+int ctrl_id = -1;  // 控制器id
 char proxy_ip[20] = "192.168.68.";  // 数据库代理ip
 int slot_no = 0;    // 时间片
 
@@ -58,8 +59,7 @@ int skfd_pkt = -1;  // 和服务器的通信套接字
 pthread_t pid_slot; // 接收时间片切换信号的线程
 int skfd_slot = -1;  // 获取时间片切换信息的套接字
 
-tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片逻辑上的
-tp_sw sw_lits_now[SW_NUM]; // 卫星交换机的列表，当前时间片探知得到的
+tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得到的
 
 
 
@@ -219,9 +219,7 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
     // c_log_debug("sw start %x add a port %x, MAC %s, config %x, state %x, n_stale %x", sw->dpid, port->port_no, port->hw_addr, port->config, port->state, port->n_stale);
     if(port->port_no != 0xfffe)
     {
-        __tp_sw_add_port(tp_find_sw(tp_get_sw_glabol_id(sw->dpid)), port->port_no, port->hw_addr);
-        sw_port_tmp = tp_get_sw_glabol_id(sw->dpid) + port->port_no;
-        redis_Set_Sw2PC_Port(sw_port_tmp, 0);
+        // 将此链路添加到数据库，设置为当前时间片以及确认的链路
     }
     // c_log_debug("sw end %x add a port %x", sw->dpid, port->port_no);
 }
@@ -238,9 +236,7 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
     // c_log_debug("sw start %x del a port %x", sw->dpid, port->port_no);
     if(port->port_no != 0xfffe)
     {
-        __tp_sw_del_port(tp_find_sw(tp_get_sw_glabol_id(sw->dpid)), port->port_no);
-        sw_port_tmp = tp_get_sw_glabol_id(sw->dpid) + port->port_no;
-        redis_Del_Sw2PC_Port(sw_port_tmp);
+        // 将此链路从数据库中的当前时间片中删除
     }
         
     // c_log_debug("sw end %x del a port %x", sw->dpid, port->port_no);
@@ -293,6 +289,7 @@ int load_conf(void)
     fscanf(fp, "%d", &slot_no);
     c_log_debug("slot_no:%d", slot_no);
     fscanf(fp, "%s", &local_ip[11]);
+    ctrl_id = atoi(&local_ip[11]);
     c_log_debug("local_ip:%s", local_ip);
     fscanf(fp, "%s", &proxy_ip[11]);
     c_log_debug("proxy_ip:%s", proxy_ip);
@@ -409,6 +406,7 @@ void* slot_change_listen(void *arg)
         if(fp == NULL) return 0;
         fscanf(fp, "%d", &slot_no);
         fscanf(fp, "%s", &local_ip[11]);
+        ctrl_id = atoi(&local_ip[11]);
         fscanf(fp, "%s", &tmp[11]);
         fclose(fp);
         for(i=0; i<3; i++)
