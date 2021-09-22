@@ -35,6 +35,8 @@
 #include <pthread.h>
 #include <signal.h>
 
+#include <topo.h>
+
 // #define SERVER_IP "192.168.10.118"
 #define CONF_FILE_PATH "/home/ctrl_connect"
 #define PROXY_PORT 2345  // 数据库监听的端口
@@ -46,15 +48,20 @@
 struct event *hello_timer;
 struct mul_app_client_cb hello_app_cbs;
 
-char local_ip[20] = "192.168.67.";
-char proxy_ip[20] = "192.168.68.";
-int slot_no = 0;
+char local_ip[20] = "192.168.67.";  // 本地控制器ip
+char proxy_ip[20] = "192.168.68.";  // 数据库代理ip
+int slot_no = 0;    // 时间片
 
-pthread_t pid_pkt;
+pthread_t pid_pkt;  // 和服务器通信的线程
 int skfd_pkt = -1;  // 和服务器的通信套接字
 
-pthread_t pid_slot;
+pthread_t pid_slot; // 接收时间片切换信号的线程
 int skfd_slot = -1;  // 获取时间片切换信息的套接字
+
+tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片逻辑上的
+tp_sw sw_lits_now[SW_NUM]; // 卫星交换机的列表，当前时间片探知得到的
+
+
 
 /**
  * hello_install_dfl_flows -
@@ -200,6 +207,44 @@ hello_core_reconn(void)
                         &hello_app_cbs);      /* Event notifier call-backs */
 }
 
+/**
+ * hello_port_add_cb -
+ *
+ * Application port add callback 
+ */
+static void
+hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    uint32_t sw_port_tmp = 0;
+    // c_log_debug("sw start %x add a port %x, MAC %s, config %x, state %x, n_stale %x", sw->dpid, port->port_no, port->hw_addr, port->config, port->state, port->n_stale);
+    if(port->port_no != 0xfffe)
+    {
+        __tp_sw_add_port(tp_find_sw(tp_get_sw_glabol_id(sw->dpid)), port->port_no, port->hw_addr);
+        sw_port_tmp = tp_get_sw_glabol_id(sw->dpid) + port->port_no;
+        redis_Set_Sw2PC_Port(sw_port_tmp, 0);
+    }
+    // c_log_debug("sw end %x add a port %x", sw->dpid, port->port_no);
+}
+
+/**
+ * hello_port_del_cb -
+ *
+ * Application port del callback 
+ */
+static void
+hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    uint32_t sw_port_tmp = 0;
+    // c_log_debug("sw start %x del a port %x", sw->dpid, port->port_no);
+    if(port->port_no != 0xfffe)
+    {
+        __tp_sw_del_port(tp_find_sw(tp_get_sw_glabol_id(sw->dpid)), port->port_no);
+        sw_port_tmp = tp_get_sw_glabol_id(sw->dpid) + port->port_no;
+        redis_Del_Sw2PC_Port(sw_port_tmp);
+    }
+        
+    // c_log_debug("sw end %x del a port %x", sw->dpid, port->port_no);
+}
 
 /* Network event callbacks */
 struct mul_app_client_cb hello_app_cbs = {
@@ -209,8 +254,8 @@ struct mul_app_client_cb hello_app_cbs = {
     .switch_del_cb = hello_sw_del,          /* Switch delete notifier */
     .switch_priv_port_alloc = NULL,
     .switch_priv_port_free = NULL,
-    .switch_port_add_cb = NULL,
-    .switch_port_del_cb = NULL,
+    .switch_port_add_cb = hello_port_add_cb,
+    .switch_port_del_cb = hello_port_del_cb,
     .switch_port_link_chg = NULL,
     .switch_port_adm_chg = NULL,
     .switch_packet_in = hello_packet_in,    /* Packet-in notifier */ 
