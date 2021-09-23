@@ -20,6 +20,7 @@ typedef struct tp_link_t
 typedef struct tp_sw_t
 {
     uint32_t sw_dpid;//switch dpid
+    int ctrl_no; // 所属的控制器id
     tp_link* list_link;//the switch link head
 }tp_sw;
 
@@ -31,7 +32,7 @@ typedef struct tp_sw_t
  * @sw_list: 想要加的目标列表
  * @return: success 1, Failure -1
  */
-int tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM]);
+RET_RESULT tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM]);
 
 /**
  * get a link from a switch link_head(correspond the __tp_head_add_link function)
@@ -54,7 +55,7 @@ void __tp_head_add_link(tp_sw *head, tp_link * n);
  * @sw_list: 想要加的目标列表
  * @return: success 1, Failure -1
  */
-int tp_delete_link(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
+RET_RESULT tp_delete_link(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
 
 /**
  * delete a link in a switch link_head
@@ -69,7 +70,7 @@ void __tp_delete_link_in_head(tp_link *del_n);
  * @sw_list: 想要加的目标列表
  * @return: success 1, Failure -1
  */
-int tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp_sw sw_list[SW_NUM]);
+RET_RESULT tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp_sw sw_list[SW_NUM]);
 
 /**
  * get a link delay in topo
@@ -77,7 +78,7 @@ int tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp
  * @sw_list: 目标列表
  * @return: success delay, Failure -1
  */
-int tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
+RET_RESULT tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
 
 /**
  * Destroys and cleans up topo.

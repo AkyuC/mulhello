@@ -1,6 +1,6 @@
 #include "topo.h"
 
-int tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM])
+RET_RESULT tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM])
 {
     tp_link *sw1tosw2;
     tp_link *sw2tosw1;
@@ -47,7 +47,7 @@ void __tp_head_add_link(tp_sw *head, tp_link * n)
     n->pprev = &head->list_link;
 }
 
-int tp_delete_link(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM])
+RET_RESULT tp_delete_link(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM])
 {
     tp_link * del_n1, *del_n2;
 
@@ -72,7 +72,7 @@ void __tp_delete_link_in_head(tp_link *del_n)
     free(del_n);
 }
 
-int tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp_sw sw_list[SW_NUM])
+RET_RESULT tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp_sw sw_list[SW_NUM])
 {
     tp_link * n1, * n2;
 
@@ -85,7 +85,7 @@ int tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t delay, tp
     return SUCCESS;
 }
 
-int tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM])
+RET_RESULT tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM])
 {
     tp_link * n1, * n2;
 

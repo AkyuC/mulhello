@@ -36,6 +36,9 @@
 #include <signal.h>
 
 #include "topo.h"
+#include "flow.h"
+#include "heap.h"
+#include "db_wr.h"
 
 
 #define CONF_FILE_PATH "/home/ctrl_connect"
@@ -55,61 +58,19 @@ int slot_no = 0;    // 时间片
 
 pthread_t pid_pkt;  // 和服务器通信的线程
 int skfd_pkt = -1;  // 和服务器的通信套接字
-
 pthread_t pid_slot; // 接收时间片切换信号的线程
 int skfd_slot = -1;  // 获取时间片切换信息的套接字
+pthread_t pid_ctrl; // 定时下发上传控制器的流表线程
+int skfd_ctrl = -1;  // 定时下发上传控制器的流表线程的套接字
 
 tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得到的
 
+uint64_t slot_start_tvl = 0;    // 时间片开始的时间戳
 
-
-/**
- * hello_install_dfl_flows -
- * Installs default flows on a switch
- *
- * @dpid : Switch's datapath-id
- * @return : void
- */
-static void
-hello_install_dfl_flows(uint64_t dpid)
-{
-    struct flow                 fl;
-    struct flow                 mask;
-
-    memset(&fl, 0, sizeof(fl));
-    of_mask_set_dc_all(&mask);
-
-    // /* Clear all entries for this switch */
-    // mul_app_send_flow_del(HELLO_APP_NAME, NULL, dpid, &fl,
-    //                       &mask, OFPP_NONE, 0, C_FL_ENT_NOCACHE, OFPG_ANY);
-
-    // /* Zero DST MAC Drop */
-    // of_mask_set_dl_dst(&mask); 
-    // mul_app_send_flow_add(HELLO_APP_NAME, NULL, dpid, &fl, &mask,
-    //                       HELLO_UNK_BUFFER_ID, NULL, 0, 0, 0, 
-    //                       C_FL_PRIO_DRP, C_FL_ENT_NOCACHE);  
-
-    // /* Zero SRC MAC Drop */
-    // of_mask_set_dc_all(&mask);
-    // of_mask_set_dl_src(&mask); 
-    // mul_app_send_flow_add(HELLO_APP_NAME, NULL, dpid, &fl, &mask, 
-    //                       HELLO_UNK_BUFFER_ID, NULL, 0, 0, 0,  
-    //                       C_FL_PRIO_DRP, C_FL_ENT_NOCACHE);
-
-    // /* Broadcast SRC MAC Drop */
-    // memset(&fl.dl_src, 0xff, OFP_ETH_ALEN);
-    // mul_app_send_flow_add(HELLO_APP_NAME, NULL, dpid, &fl, &mask,
-    //                       HELLO_UNK_BUFFER_ID, NULL, 0, 0, 0,
-    //                       C_FL_PRIO_DRP, C_FL_ENT_NOCACHE);
-
-    /* Send any unknown flow to app */
-    // memset(&fl, 0, sizeof(fl));
-    // of_mask_set_dc_all(&mask);
-    // mul_app_send_flow_add(HELLO_APP_NAME, NULL, dpid, &fl, &mask,
-    //                       HELLO_UNK_BUFFER_ID, NULL, 0, 0, 0,
-    //                       C_FL_PRIO_DFL, C_FL_ENT_LOCAL);
-}
-
+int load_conf(void); // 读取配置文件
+void* pkt_listen(void *arg);    // 监听数据库代理的消息线程
+void* slot_change_listen(void *arg);    // 监听时间片开始或者切换的线程
+void* flow_issue_ctrl(void *arg);       // 周期性的下发上传到控制器的流表
 
 /**
  * hello_sw_add -
@@ -124,9 +85,9 @@ hello_sw_add(mul_switch_t *sw)
     uint32_t sw_glabol_key;
     
     /* Add few default flows in this switch */
-    hello_install_dfl_flows(sw->dpid);
     c_log_debug("switch dpid 0x%llx joined network", (unsigned long long)(sw->dpid));
-
+    // 添加到数据库当中，表示该交换机所属于这个控制器
+    sw_list[sw->dpid].ctrl_no = ctrl_id;
 }
 
 /**
@@ -140,6 +101,8 @@ static void
 hello_sw_del(mul_switch_t *sw)
 {
     c_log_debug("switch dpid 0x%llx left network", (unsigned long long)(sw->dpid));
+    // 将数据库当中的交换机所属删除，或者设置为初始值，表示现在这个交换机没有连接到控制器
+    sw_list[sw->dpid].ctrl_no = -1;
 }
 
 /**
@@ -163,6 +126,8 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 size_t pkt_len UNUSED)
 {
     c_log_info("hello app - packet-in from network");
+    // 更新拓扑
+    hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id);
     return;
 }
 
@@ -182,6 +147,8 @@ hello_core_closed(void)
 	pthread_join(pid_pkt, NULL);
     pthread_cancel(pid_slot);
 	pthread_join(pid_slot, NULL);
+    pthread_cancel(pid_ctrl);
+	pthread_join(pid_ctrl, NULL);
     return;
 }
 
@@ -216,12 +183,10 @@ static void
 hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
 {
     uint32_t sw_port_tmp = 0;
-    // c_log_debug("sw start %x add a port %x, MAC %s, config %x, state %x, n_stale %x", sw->dpid, port->port_no, port->hw_addr, port->config, port->state, port->n_stale);
     if(port->port_no != 0xfffe)
     {
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
     }
-    // c_log_debug("sw end %x add a port %x", sw->dpid, port->port_no);
 }
 
 /**
@@ -233,13 +198,10 @@ static void
 hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
 {
     uint32_t sw_port_tmp = 0;
-    // c_log_debug("sw start %x del a port %x", sw->dpid, port->port_no);
     if(port->port_no != 0xfffe)
     {
         // 将此链路从数据库中的当前时间片中删除
     }
-        
-    // c_log_debug("sw end %x del a port %x", sw->dpid, port->port_no);
 }
 
 /* Network event callbacks */
@@ -279,6 +241,81 @@ hello_timer_event(evutil_socket_t fd UNUSED,
     evtimer_add(hello_timer, &tv);
 }  
 
+/**
+ * hello_module_init -
+ * Hello application's main entry point
+ * 
+ * @base_arg: Pointer to the event base used to schedule IO events
+ * @return : void
+ */
+void
+hello_module_init(void *base_arg)
+{
+    struct event_base *base = base_arg;
+    struct timeval tv = { 1, 0 };
+    int ret;
+
+    c_log_debug("%s", FN);
+    for(ret=0; ret<SW_NUM; ret++)
+    {
+        sw_list[ret].ctrl_no = -1;
+    }
+
+    if(load_conf())
+        c_log_debug("Load config success！");
+    else
+        c_log_debug("Load config failed！");
+
+    ret = pthread_create(&pid_pkt, NULL, pkt_listen, NULL);
+    if (ret == -1) 
+        c_log_debug("TCP listen failed!"); 
+    else
+        c_log_debug("TCP listen start!");
+
+    ret = pthread_create(&pid_slot, NULL, slot_change_listen, NULL);
+    if (ret == -1) 
+        c_log_debug("Slot change thread create listen failed!"); 
+    else
+        c_log_debug("Slot change thread create listen success!");
+
+    ret = pthread_create(&pid_ctrl, NULL, flow_issue_ctrl, NULL);
+    if (ret == -1) 
+        c_log_debug("下方上传到控制器的线程创建失败！"); 
+    else
+        c_log_debug("下方上传到控制器的线程创建成功！");
+
+    /* Fire up a timer to do any housekeeping work for this application */
+    hello_timer = evtimer_new(base, hello_timer_event, NULL); 
+    evtimer_add(hello_timer, &tv);
+
+    mul_register_app_cb(NULL,                 /* Application specific arg */
+                        HELLO_APP_NAME,       /* Application Name */ 
+                        C_APP_ALL_SW,         /* Send any switch's notification */
+                        C_APP_ALL_EVENTS,     /* Send all event notification per switch */
+                        0,                    /* If any specific dpid filtering is requested */
+                        NULL,                 /* List of specific dpids for filtering events */
+                        &hello_app_cbs);      /* Event notifier call-backs */
+
+    return;
+}
+
+/**
+ * hello_module_vty_init -
+ * Hello Application's vty entry point. If we want any private cli
+ * commands. then we register them here
+ *
+ * @arg : Pointer to the event base(mostly left unused)
+ */
+void
+hello_module_vty_init(void *arg UNUSED)
+{
+    c_log_debug("%s:", FN);
+}
+
+module_init(hello_module_init);
+module_vty_init(hello_module_vty_init);
+
+
 int load_conf(void)
 {
     FILE * fp = NULL;
@@ -308,18 +345,6 @@ void* pkt_listen(void *arg)
 	if ( -1 == skfd_pkt) {
 		c_log_debug("socket failed");
 	}
-
-	
-	// addr.sin_family = AF_INET; // 设置tcp协议族
-	// addr.sin_port = htons(CLIENT_PORT); // 设置端口号
-	// addr.sin_addr.s_addr = inet_addr(CLIENT_IP); // 设置ip地址
-
-	// ret = bind(skfd_pkt, (struct sockaddr*)&addr, sizeof(addr));
-	// if (ret == -1) 
-    // {
-    //     c_log_debug("bind failed");
-	// }
- 
 
 	addr.sin_family = AF_INET; //设置tcp协议族
 	addr.sin_port = htons(PROXY_PORT); //设置端口号
@@ -400,6 +425,7 @@ void* slot_change_listen(void *arg)
 	{
 		bzero(buf, 30);
 		recvfrom(skfd_slot, buf, BUFSIZE, 0, NULL, NULL);
+        slot_start_tvl = hello_get_timeval();   // 获取时间片开始的时间
         pthread_testcancel();
         // 读取配置文件
         fp = fopen(CONF_FILE_PATH, "r");
@@ -434,67 +460,89 @@ void* slot_change_listen(void *arg)
     return NULL;
 }
 
-
-/**
- * hello_module_init -
- * Hello application's main entry point
- * 
- * @base_arg: Pointer to the event base used to schedule IO events
- * @return : void
- */
-void
-hello_module_init(void *base_arg)
+void* flow_issue_ctrl(void *arg)
 {
-    struct event_base *base = base_arg;
-    struct timeval tv = { 1, 0 };
-    int ret;
+    int i;
 
-    c_log_debug("%s", FN);
-
-    if(load_conf())
-        c_log_debug("Load config success！");
-    else
-        c_log_debug("Load config failed！");
-
-    ret = pthread_create(&pid_pkt, NULL, pkt_listen, NULL);
-    if (ret == -1) 
-        c_log_debug("TCP listen failed!"); 
-    else
-        c_log_debug("TCP listen start!");
-
-    ret = pthread_create(&pid_slot, NULL, slot_change_listen, NULL);
-    if (ret == -1) 
-        c_log_debug("Slot change thread create listen failed!"); 
-    else
-        c_log_debug("Slot change thread create listen success!");
-
-    /* Fire up a timer to do any housekeeping work for this application */
-    hello_timer = evtimer_new(base, hello_timer_event, NULL); 
-    evtimer_add(hello_timer, &tv);
-
-    mul_register_app_cb(NULL,                 /* Application specific arg */
-                        HELLO_APP_NAME,       /* Application Name */ 
-                        C_APP_ALL_SW,         /* Send any switch's notification */
-                        C_APP_ALL_EVENTS,     /* Send all event notification per switch */
-                        0,                    /* If any specific dpid filtering is requested */
-                        NULL,                 /* List of specific dpids for filtering events */
-                        &hello_app_cbs);      /* Event notifier call-backs */
-
-    return;
+    while(1)
+    {
+        for(i = 0; i<SW_NUM; i++)
+        {
+            if(sw_list[i] == ctrl_id)
+            {
+                hello_add_flow_to_ctrl(sw_list[i].sw_dpid, 5, PRO_SW2CTRL);
+            }
+        }
+        pthread_testcancel();
+        sleep(4.5);
+    }
+    return NULL;
 }
 
-/**
- * hello_module_vty_init -
- * Hello Application's vty entry point. If we want any private cli
- * commands. then we register them here
- *
- * @arg : Pointer to the event base(mostly left unused)
- */
-void
-hello_module_vty_init(void *arg UNUSED)
+RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], uint32_t buffer_id)
 {
-    c_log_debug("%s:", FN);
-}
+    uint64_t sw_src = (nw_src >> 24)& 0x000000ff;
+    uint64_t sw_dst = (nw_dst >> 24)& 0x000000ff;
+    tp_link * tmp = NULL;  // 迭代的中间变量
+    int i = 0;
+    int sw_min = sw_src;  // 当前迭代的最小的sw
+    int sw_min_weight = 0x0fffffffff;  // 当前迭代的最小的sw的权重
+    uint32_t outport;  
+    int D[SW_NUM][2] = {-1};    // 第一列为权重，第二列为前序节点，第三列为前序节点转发的出端口
 
-module_init(hello_module_init);
-module_vty_init(hello_module_vty_init);
+    // 初始化
+    D[sw_src][0] = 0;
+    D[sw_src][1] = sw_src;
+    tmp = sw_list[sw_src].list_link;
+    while(tmp != NULL)
+    {
+        D[tmp->sw_adj_dpid][0] = tmp->delay;
+        D[tmp->sw_adj_dpid][1] = sw_src;
+        tmp = tmp->next;
+    }
+
+    while(true)
+    {
+        for(i=0; i<SW_NUM; i++)
+        {
+            if(D[i][1] == -1 && D[i][0] < sw_min_weight)
+            {
+                sw_min = i;
+            }
+        }
+        if(sw_min == sw_dst)
+        {
+            // 找到了路径，一条一条写，或者一起写
+            outport = sw_min + 1000;
+            sw_min = D[sw_min][1];
+            while(sw_min != sw_src)
+            {
+                // 写入数据库
+                if(sw_list[sw_min].ctrl_no == ctrl_id)  // 本控制下的直接下发
+                {
+                    hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, (uint32_t)-1, outport, 0, PRO_NORMAL);
+                }
+                outport = sw_min + 1000;
+                sw_min = D[sw_min][1];
+            }
+            // 写入数据库
+            hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, buffer_id, outport, 0, PRO_NORMAL);
+            return SUCCESS;
+        }
+        if(D[sw_min][1] != -1)return FAILURE;   // 找不到路径
+        // 更新权重
+        tmp = sw_list[sw_min].list_link;
+        while(tmp != NULL)
+        {
+            if(D[sw_min][0] + tmp->delay < D[tmp->sw_adj_dpid][0])
+            {
+                D[tmp->sw_adj_dpid][0] = D[sw_min][0] + tmp->delay;
+                D[tmp->sw_adj_dpid][1] = sw_min;
+            }
+            tmp = tmp->next;
+        }
+        sw_min_weight = 0x0fffffffff;
+    }
+
+    return FAILURE;
+}

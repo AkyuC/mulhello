@@ -21,10 +21,6 @@
 
 #define HELLO_UNK_BUFFER_ID 0xffffffff
 
-int load_conf(void);
-void* pkt_listen(void *arg);
-void* slot_change_listen(void *arg);
-
 void hello_module_init(void *ctx);
 void hello_module_vty_init(void *arg);
 
