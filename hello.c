@@ -131,7 +131,11 @@ hello_packet_in(mul_switch_t *sw UNUSED,
     // 更新拓扑
     Get_Real_Topo(slot_no, proxy_ip, sw_list);
     // 计算路由
-    hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id);
+    if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id)==FAILURE)
+    {
+        Set_Cal_Fail_Route();
+        hello_add_flow_dafault(sw->dpid, fl->ip.nw_src, fl->ip.nw_dst, buffer_id, 5, TABLE_DEFAULT);
+    }
     tp_distory(sw_list);
     return;
 }
@@ -496,6 +500,7 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
     int sw_min_weight = 0x0fffffffff;  // 当前迭代的最小的sw的权重
     uint32_t outport;  
     int D[SW_NUM][2] = {-1};    // 第一列为权重，第二列为前序节点，第三列为前序节点转发的出端口
+    char rt[SW_NUM] = {'\0'};
 
     // 初始化
     D[sw_src][0] = 0;
@@ -519,8 +524,10 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
         }
         if(sw_min == sw_dst)
         {
-            // 找到了路径，一条一条写，或者一起写
+            // 找到了路径，一起写
+            i = SW_NUM-2;
             outport = sw_min + 1000;
+            rt[i--] = (char)sw_min;
             sw_min = D[sw_min][1];
             while(sw_min != sw_src)
             {
@@ -530,9 +537,12 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
                     hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, (uint32_t)-1, outport, 0, PRO_NORMAL);
                 }
                 outport = sw_min + 1000;
+                rt[i--] = (char)sw_min;
                 sw_min = D[sw_min][1];
             }
             // 写入数据库
+            rt[i] = (char)sw_min;
+            Set_Cal_Route();
             hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, buffer_id, outport, 0, PRO_NORMAL);
             return SUCCESS;
         }
