@@ -88,6 +88,7 @@ hello_sw_add(mul_switch_t *sw)
     c_log_debug("switch dpid 0x%llx joined network", (unsigned long long)(sw->dpid));
     // 添加到数据库当中，表示该交换机所属于这个控制器
     sw_list[sw->dpid].ctrl_no = ctrl_id;
+    Add_Sw_Set(ctrl_id, sw->dpid, slot_no, proxy_ip);
 }
 
 /**
@@ -103,6 +104,7 @@ hello_sw_del(mul_switch_t *sw)
     c_log_debug("switch dpid 0x%llx left network", (unsigned long long)(sw->dpid));
     // 将数据库当中的交换机所属删除，或者设置为初始值，表示现在这个交换机没有连接到控制器
     sw_list[sw->dpid].ctrl_no = -1;
+    Del_Sw_Set(ctrl_id, sw->dpid, slot_no, proxy_ip);
 }
 
 /**
@@ -127,7 +129,10 @@ hello_packet_in(mul_switch_t *sw UNUSED,
 {
     c_log_info("hello app - packet-in from network");
     // 更新拓扑
+    Get_Real_Topo(slot_no, proxy_ip, sw_list);
+    // 计算路由
     hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id);
+    tp_distory(sw_list);
     return;
 }
 
@@ -186,6 +191,7 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
     if(port->port_no != 0xfffe)
     {
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
+        Add_Real_Topo(port->port_no, sw->dpid + 1000, slot_no, proxy_ip);
     }
 }
 
@@ -201,6 +207,7 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
     if(port->port_no != 0xfffe)
     {
         // 将此链路从数据库中的当前时间片中删除
+        Del_Real_Topo(port->port_no, sw->dpid + 1000, slot_no, proxy_ip);
     }
 }
 
