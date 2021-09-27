@@ -127,8 +127,8 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 uint8_t *raw UNUSED,
                 size_t pkt_len UNUSED)
 {
-    char c_nw_src[5] = {'\0'};
-    char c_nw_dst[5] = {'\0'};
+    char c_nw_src[9] = {'\0'};
+    char c_nw_dst[9] = {'\0'};
     c_log_info("hello app - packet-in from network");
     // 更新拓扑
     Get_Real_Topo(slot_no, proxy_ip, sw_list);
@@ -505,8 +505,8 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
     uint32_t outport;  
     int D[SW_NUM][2] = {-1};    // 第一列为权重，第二列为前序节点，第三列为前序节点转发的出端口
     char rt[SW_NUM] = {'\0'};
-    char c_nw_src[5] = {'\0'};
-    char c_nw_dst[5] = {'\0'};
+    char c_nw_src[9] = {'\0'};
+    char c_nw_dst[9] = {'\0'};
 
     // 初始化
     D[sw_src][0] = 0;
