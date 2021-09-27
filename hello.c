@@ -127,13 +127,17 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 uint8_t *raw UNUSED,
                 size_t pkt_len UNUSED)
 {
+    char c_nw_src[5] = {'\0'};
+    char c_nw_dst[5] = {'\0'};
     c_log_info("hello app - packet-in from network");
     // 更新拓扑
     Get_Real_Topo(slot_no, proxy_ip, sw_list);
     // 计算路由
     if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id)==FAILURE)
     {
-        Set_Cal_Fail_Route();
+        sprintf(c_nw_src, "%08x", ntohl(fl->ip.nw_src));
+        sprintf(c_nw_dst, "%08x", ntohl(fl->ip.nw_dst));
+        Set_Cal_Fail_Route(c_nw_src, c_nw_dst, slot_no, proxy_ip);
         hello_add_flow_dafault(sw->dpid, fl->ip.nw_src, fl->ip.nw_dst, buffer_id, 5, TABLE_DEFAULT);
     }
     tp_distory(sw_list);
@@ -501,6 +505,8 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
     uint32_t outport;  
     int D[SW_NUM][2] = {-1};    // 第一列为权重，第二列为前序节点，第三列为前序节点转发的出端口
     char rt[SW_NUM] = {'\0'};
+    char c_nw_src[5] = {'\0'};
+    char c_nw_dst[5] = {'\0'};
 
     // 初始化
     D[sw_src][0] = 0;
@@ -542,7 +548,9 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
             }
             // 写入数据库
             rt[i] = (char)sw_min;
-            Set_Cal_Route();
+            sprintf(c_nw_src, "%08x", ntohl(nw_src));
+            sprintf(c_nw_dst, "%08x", ntohl(nw_dst));
+            Set_Cal_Route(c_nw_src, c_nw_dst, rt, slot_no, proxy_ip);
             hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, buffer_id, outport, 0, PRO_NORMAL);
             return SUCCESS;
         }
