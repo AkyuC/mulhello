@@ -37,7 +37,7 @@ RET_RESULT hello_add_flow_transport(uint64_t sw_dpid, uint32_t nw_src, uint32_t 
 {
     struct flow fl;
     struct flow mask;
-    mul_act_mdata_t mdata
+    mul_act_mdata_t mdata;
 
     memset(&fl, 0, sizeof(fl));
     memset(&mdata, 0, sizeof(mdata));
@@ -66,7 +66,7 @@ RET_RESULT hello_add_flow_dafault(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw
 {
     struct flow fl;
     struct flow mask;
-    mul_act_mdata_t mdata
+    mul_act_mdata_t mdata;
 
     memset(&fl, 0, sizeof(fl));
     memset(&mdata, 0, sizeof(mdata));
@@ -88,4 +88,31 @@ RET_RESULT hello_add_flow_dafault(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw
 
     fl.dl_type = htons(ETH_TYPE_IP);
     return hello_add_flow(sw_dpid, &fl, &mask, buffer_id, &mdata, 0 ,htimeo, prio);
+}
+
+RET_RESULT hello_del_flow(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst)
+{
+    struct flow fl;
+    struct flow mask;
+    memset(&fl, 0, sizeof(fl));
+    of_mask_set_dc_all(&mask);
+
+    fl.table_id = 0;
+    fl.ip.nw_dst = nw_dst;
+    fl.ip.nw_src = nw_src;
+    fl.dl_type = htons(ETH_TYPE_ARP);
+    of_mask_set_dl_type(&mask);
+    of_mask_set_nw_dst(&mask, 32);
+    of_mask_set_nw_src(&mask, 32);
+
+    if(mul_app_send_flow_del(HELLO_APP_NAME, NULL, sw_dpid, &fl, &mask, 0, 0, PRO_NORMAL, 0)!=0)
+    {
+        return FAILURE;
+    }
+    fl.dl_type = htons(ETH_TYPE_IP);
+    if(mul_app_send_flow_del(HELLO_APP_NAME, NULL, sw_dpid, &fl, &mask, 0, 0, PRO_NORMAL, 0)!=0)
+    {
+        return FAILURE;
+    }
+    return SUCCESS;
 }

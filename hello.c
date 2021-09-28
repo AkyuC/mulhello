@@ -355,6 +355,11 @@ void* pkt_listen(void *arg)
 	int i, j =0;
     struct sockaddr_in addr;
     char rec[BUFSIZE] = {0};
+    uint64_t sw_dpid = 0;
+    uint32_t outport = 0;
+    uint32_t nw_src = 0;
+    uint32_t nw_dst = 0;
+    uint32_t timeout = 0;
 
 	skfd_pkt = socket(AF_INET, SOCK_STREAM, 0);
 	if ( -1 == skfd_pkt) {
@@ -379,42 +384,39 @@ void* pkt_listen(void *arg)
 		bzero(&rec, sizeof(rec));
 		ret = recv(skfd_pkt, &rec, sizeof(rec), 0);
         pthread_testcancel();
-		if(-1 == ret) c_log_debug("recv failed");
+		if(-1 == ret) c_log_debug("recv failed");// 切换到备用控制器，待完成
+        // type:1,sw:3,ip_src:8,ip_dst:8,outport:3,timeout:3
+        // %d%03d%s%s%03d%03d
 		else if(ret > 0) 
 		{
-			// printf("recv from server: %s\n", rec);
-			for(i = 0; rec[i] != '\0'; )
-			{
-				// T:1,L:2,V
-                switch(rec[i])
-				{
-					case ROUTE_KEY:
-						printf("route key = ");
-						for(j = 1; j <= ((rec[i+1] - '0')*10 + (rec[i+2] - '0')); j++)
-						{
-							printf("%c", rec[i+2+j]);
-						}
-						printf("\n");
-						i += (2+j);
-						break;
-					case ROUTE_VALUE:
-						printf("route value = ");
-						for(j = 1; j <= ((rec[i+1] - '0')*10 + (rec[i+2] - '0')); j++)
-						{
-							printf("%c", rec[i+2+j]);
-						}
-						printf("\n");
-						i += (2+j);
-						break;
-					default:
-						printf("received unknown packet\n");
-						i++;
-						break;
-				}
-			}
+            rec[26] = '\0';
+            sscanf(&rec[23], "%d", &timeout);
+            rec[23] = '\0';
+            sscanf(&rec[20], "%d", &outport);
+            rec[20] = '\0';
+            sscanf(&rec[12], "%x", &nw_dst);
+            rec[12] = '\0';
+            sscanf(&rec[4], "%x", &nw_src);
+            rec[4] = '\0';
+            sscanf(&rec[1], "%d", &sw_dpid);
+			switch (rec[0])
+            {
+            case ROUTE_ADD:
+                if(timeout == 5)
+                {
+                    hello_add_flow_transport(sw_dpid, nw_src, nw_dst, (uint32_t)-1, outport, timeout, PRO_NORMAL);
+                }else{
+                    hello_add_flow_transport(sw_dpid, nw_src, nw_dst, (uint32_t)-1, outport, int(SLOT_TIME - (slot_start_tvl - hello_get_timeval())/1000), PRO_NORMAL);
+                }
+                break;
+            case ROUTE_DEL:
+                hello_del_flow(sw_dpid, nw_src, nw_dst);
+                break;
+            default:
+                break;
+            }
             pthread_testcancel();
 		}
-        // 对收到的消息进行处理
 	}
 }
 
@@ -485,7 +487,7 @@ void* flow_issue_ctrl(void *arg)
         {
             if(sw_list[i] == ctrl_id)
             {
-                hello_add_flow_to_ctrl(sw_list[i].sw_dpid, 5, PRO_SW2CTRL);
+                hello_add_flow_to_ctrl(sw_list[i].sw_dpid, 3, PRO_SW2CTRL);
             }
         }
         pthread_testcancel();

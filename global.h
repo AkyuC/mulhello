@@ -21,6 +21,9 @@ typedef enum RET_RESULT
 #define TABLE_NORMAL 0  // 普通流表项所在table
 #define TABLE_DEFAULT 1 // 默认流表项所在table
 
+#define ROUTE_ADD 1 // type_1 add
+#define ROUTE_DEL 2 // type_2 del
+
 uint64_t hello_get_timeval(void)    // 获取时间戳
 {
     struct timeval t;

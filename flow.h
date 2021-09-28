@@ -63,4 +63,16 @@ RET_RESULT hello_add_flow_transport(uint64_t sw_dpid, uint32_t nw_src, uint32_t 
  */
 RET_RESULT hello_add_flow_dafault(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst, uint32_t buffer_id,
                                   uint16_t htimeo, uint16_t prio);
+
+/** 
+ * @name hello_del_flow
+ * @brief 删除流表
+ * @param [in] sw_dpid Switch dipd
+ * @param [in] nw_src 源地址
+ * @param [in] nw_dst 目的地址
+ *
+ * @retval success or failure  
+ */
+RET_RESULT hello_del_flow(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst);
+
 #endif
