@@ -51,8 +51,8 @@ RET_RESULT tp_delete_link(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[
 {
     tp_link * del_n1, *del_n2;
 
-    del_n1 = __tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
-    del_n2 = __tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
+    del_n1 = tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
+    del_n2 = tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
 
     if(del_n1 == NULL && del_n2 == NULL)return FAILURE;
     if(del_n1)__tp_delete_link_in_head(del_n1);
@@ -76,8 +76,8 @@ RET_RESULT tp_set_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, uint64_t de
 {
     tp_link * n1, * n2;
 
-    n1 = __tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
-    n2 = __tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
+    n1 = tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
+    n2 = tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
 
     if(n1 == NULL && n2 == NULL)return FAILURE;
     if(n1)n1->delay = delay;
@@ -89,8 +89,8 @@ RET_RESULT tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_li
 {
     tp_link * n1, * n2;
 
-    n1 = __tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
-    n2 = __tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
+    n1 = tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
+    n2 = tp_get_link_in_head(sw_list[sw_dpid_adj].list_link, sw_dpid);
 
     if(n1 == NULL && n2 == NULL)return FAILURE;
     return n1->delay;
