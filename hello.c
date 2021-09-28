@@ -396,8 +396,10 @@ void* pkt_listen(void *arg)
             sscanf(&rec[20], "%d", &outport);
             rec[20] = '\0';
             sscanf(&rec[12], "%x", &nw_dst);
+            nw_dst = htonl(nw_dst);
             rec[12] = '\0';
             sscanf(&rec[4], "%x", &nw_src);
+            nw_src = htonl(nw_src);
             rec[4] = '\0';
             sscanf(&rec[1], "%d", &sw_dpid);
 			switch (rec[0])
