@@ -1,4 +1,6 @@
 #include "topo.h"
+#include <stdlib.h>
+#include <string.h>
 
 RET_RESULT tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM])
 {
@@ -98,7 +100,6 @@ RET_RESULT tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_li
 
 void tp_distory(tp_sw sw_list[SW_NUM])
 {
-    tp_sw* tmp;
     tp_link * next_tmp1, * next_tmp2;
     int i = 0;
 

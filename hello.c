@@ -20,8 +20,12 @@
 #include "mul_common.h"
 #include "mul_vty.h"
 #include "hello.h"
-#include <pthread.h>
+#include "topo.h"
+#include "flow.h"
+#include "db_wr.h"
+#include "global.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -35,18 +39,6 @@
 #include <pthread.h>
 #include <signal.h>
 
-#include "topo.h"
-#include "flow.h"
-#include "heap.h"
-#include "db_wr.h"
-
-
-#define CONF_FILE_PATH "/home/ctrl_connect"
-#define PROXY_PORT 2345  // 数据库监听的端口
-#define SLOT_LiSTEN_PORT 12000  // 本地时间片切换时，需要知道时间片切换，收消息的套接字
-#define BUFSIZE 512 // 套接字缓存大小
-#define ROUTE_KEY '1' // type_1
-#define ROUTE_VALUE '2' // type_2
 
 struct event *hello_timer;
 struct mul_app_client_cb hello_app_cbs;
@@ -68,9 +60,32 @@ tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得�
 uint64_t slot_start_tvl = 0;    // 时间片开始的时间戳
 
 int load_conf(void); // 读取配置文件
-void* pkt_listen(void *arg);    // 监听数据库代理的消息线程
-void* slot_change_listen(void *arg);    // 监听时间片开始或者切换的线程
-void* flow_issue_ctrl(void *arg);       // 周期性的下发上传到控制器的流表
+void* pkt_listen(void *arg UNUSED);    // 监听数据库代理的消息线程
+void* slot_change_listen(void *arg UNUSED);    // 监听时间片开始或者切换的线程
+void* flow_issue_ctrl(void *arg UNUSED);       // 周期性的下发上传到控制器的流表
+uint64_t hello_get_timeval(void);    // 获取时间戳
+RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM]);    // 路由
+
+/**
+ * hello_install_dfl_flows -
+ * Installs default flows on a switch
+ *
+ * @dpid : Switch's datapath-id
+ * @return : void
+ */
+static void
+hello_install_dfl_flows(uint64_t dpid)
+{
+    struct flow fl;
+    struct flow mask;
+    
+    /* Send any unknown flow to app */
+    memset(&fl, 0, sizeof(fl));
+    of_mask_set_dc_all(&mask);
+    mul_app_send_flow_add(HELLO_APP_NAME, NULL, dpid, &fl, &mask, 
+                          HELLO_UNK_BUFFER_ID, NULL, 0, 0, 0,  
+                          1, C_FL_ENT_LOCAL);
+}
 
 /**
  * hello_sw_add -
@@ -81,14 +96,14 @@ void* flow_issue_ctrl(void *arg);       // 周期性的下发上传到控制器�
  */
 static void 
 hello_sw_add(mul_switch_t *sw)
-{
-    uint32_t sw_glabol_key;
-    
+{    
     /* Add few default flows in this switch */
-    c_log_debug("switch dpid 0x%llx joined network", (unsigned long long)(sw->dpid));
+    c_log_debug("\t\nswitch dpid 0x%llx joined network", (unsigned long long)(sw->dpid-SW_DPID_OFFSET));
+    hello_install_dfl_flows(sw->dpid);
     // 添加到数据库当中，表示该交换机所属于这个控制器
-    sw_list[sw->dpid].ctrl_no = ctrl_id;
-    Add_Sw_Set(ctrl_id, sw->dpid, slot_no, proxy_ip);
+    sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no = ctrl_id;
+    Add_Sw_Set(ctrl_id, sw->dpid-SW_DPID_OFFSET, slot_no, proxy_ip);
+    c_log_debug("hello_sw_add ctrl_id:%x ctrl_no:%x end",ctrl_id,sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no);
 }
 
 /**
@@ -101,11 +116,13 @@ hello_sw_add(mul_switch_t *sw)
 static void
 hello_sw_del(mul_switch_t *sw)
 {
-    if((SLOT_TIME + (slot_start_tvl - hello_get_timeval())/1000) < 2) return;
-    c_log_debug("switch dpid 0x%llx left network", (unsigned long long)(sw->dpid));
+    uint64_t timenow = hello_get_timeval();
+    if((SLOT_TIME + (slot_start_tvl - timenow)/1000) < 2) return;
+    c_log_debug("\t\nswitch dpid 0x%llx left network", (unsigned long long)(sw->dpid-SW_DPID_OFFSET));
     // 将数据库当中的交换机所属删除，或者设置为初始值，表示现在这个交换机没有连接到控制器
-    sw_list[sw->dpid].ctrl_no = -1;
-    Del_Sw_Set(ctrl_id, sw->dpid, slot_no, proxy_ip);
+    sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no = -1;
+    Del_Sw_Set(ctrl_id, sw->dpid-SW_DPID_OFFSET, slot_no, proxy_ip);
+    c_log_debug("hello_sw_del end");
 }
 
 /**
@@ -130,19 +147,21 @@ hello_packet_in(mul_switch_t *sw UNUSED,
 {
     char c_nw_src[9] = {'\0'};
     char c_nw_dst[9] = {'\0'};
-    c_log_info("hello app - packet-in from network");
+    c_log_info("\nhello app - packet-in from network");
+    tp_distory(sw_list);
     // 更新拓扑
     Get_Real_Topo(slot_no, proxy_ip, sw_list);
+    c_log_debug("Get_Real_Topo end");
     // 计算路由
-    if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list, buffer_id)==FAILURE)
+    if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list)==FAILURE)
     {
         sprintf(c_nw_src, "%08x", ntohl(fl->ip.nw_src));
         sprintf(c_nw_dst, "%08x", ntohl(fl->ip.nw_dst));
-        Set_Cal_Fail_Route(c_nw_src, c_nw_dst, slot_no, proxy_ip);
-        hello_add_flow_dafault(sw->dpid, fl->ip.nw_src, fl->ip.nw_dst, buffer_id, 5, PRO_NORMAL);
+        c_log_debug("hello_route fail");
+        Set_Cal_Fail_Route(c_nw_src, c_nw_dst, proxy_ip);
+        c_log_debug("Set_Cal_Fail_Route fail");
     }
-    tp_distory(sw_list);
-    return;
+    c_log_debug("hello_packet_in end");
 }
 
 /**
@@ -163,7 +182,8 @@ hello_core_closed(void)
 	pthread_join(pid_slot, NULL);
     pthread_cancel(pid_ctrl);
 	pthread_join(pid_ctrl, NULL);
-    return;
+    
+    c_log_debug("hello_core_closed end");
 }
 
 /**
@@ -186,6 +206,7 @@ hello_core_reconn(void)
                         0,                    /* If any specific dpid filtering is requested */
                         NULL,                 /* List of specific dpids for filtering events */
                         &hello_app_cbs);      /* Event notifier call-backs */
+    c_log_debug("hello_core_reconn end");
 }
 
 /**
@@ -196,11 +217,12 @@ hello_core_reconn(void)
 static void
 hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
 {
-    uint32_t sw_port_tmp = 0;
-    if(port->port_no != 0xfffe)
+    if(port->port_no != 0xfffe && port->port_no < 1999)
     {
+        c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
-        Add_Real_Topo(port->port_no, sw->dpid + 1000, slot_no, proxy_ip);
+        Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
+        c_log_debug("hello_port_add_cb end");
     }
 }
 
@@ -212,11 +234,14 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
 static void
 hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
 {
-    uint32_t sw_port_tmp = 0;
-    if(port->port_no != 0xfffe && (SLOT_TIME + (slot_start_tvl - hello_get_timeval())/1000) >= 2)
+    uint64_t timenow = hello_get_timeval();
+    
+    if(port->port_no != 0xfffe && (SLOT_TIME + (slot_start_tvl - timenow)/1000) >= 2 && port->port_no < 1999)
     {
+        c_log_debug("\t\nhello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
         // 将此链路从数据库中的当前时间片中删除
-        Del_Real_Topo(port->port_no, sw->dpid + 1000, slot_no, proxy_ip);
+        Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
+        c_log_debug("hello_port_del_cb end");
     }
 }
 
@@ -271,10 +296,11 @@ hello_module_init(void *base_arg)
     struct timeval tv = { 1, 0 };
     int ret;
 
-    c_log_debug("%s", FN);
+    c_log_debug("hello_module_init %s", FN);
     for(ret=0; ret<SW_NUM; ret++)
     {
         sw_list[ret].ctrl_no = -1;
+        sw_list[ret].sw_dpid = ret;
     }
 
     if(load_conf())
@@ -312,7 +338,7 @@ hello_module_init(void *base_arg)
                         NULL,                 /* List of specific dpids for filtering events */
                         &hello_app_cbs);      /* Event notifier call-backs */
 
-    return;
+    c_log_debug("hello_module_init end");
 }
 
 /**
@@ -328,10 +354,6 @@ hello_module_vty_init(void *arg UNUSED)
     c_log_debug("%s:", FN);
 }
 
-module_init(hello_module_init);
-module_vty_init(hello_module_vty_init);
-
-
 int load_conf(void)
 {
     FILE * fp = NULL;
@@ -339,21 +361,20 @@ int load_conf(void)
 
     if(fp == NULL) return 0;
 
-    fscanf(fp, "%d", &slot_no);
+    if(fscanf(fp, "%d", &slot_no)<1)return 0;
     c_log_debug("slot_no:%d", slot_no);
-    fscanf(fp, "%s", &local_ip[11]);
-    ctrl_id = atoi(&local_ip[11]);
+    if(fscanf(fp, "%s", &local_ip[11])<1)return 0;
+    ctrl_id = atoi(&local_ip[11])-1;
     c_log_debug("local_ip:%s", local_ip);
-    fscanf(fp, "%s", &proxy_ip[11]);
+    if(fscanf(fp, "%s", &proxy_ip[11])<1)return 0;
     c_log_debug("proxy_ip:%s", proxy_ip);
     fclose(fp);
     return 1;
 }
 
-void* pkt_listen(void *arg)
+void* pkt_listen(void *arg UNUSED)
 {
     int ret = -1;
-	int i, j =0;
     struct sockaddr_in addr;
     char rec[BUFSIZE] = {0};
     uint64_t sw_dpid = 0;
@@ -361,6 +382,7 @@ void* pkt_listen(void *arg)
     uint32_t nw_src = 0;
     uint32_t nw_dst = 0;
     uint32_t timeout = 0;
+    uint64_t timenow = 0;
 
 	skfd_pkt = socket(AF_INET, SOCK_STREAM, 0);
 	if ( -1 == skfd_pkt) {
@@ -378,14 +400,17 @@ void* pkt_listen(void *arg)
         c_log_debug("connect failed");
         return NULL;
     }
+    printf("pkt_listen starting!\n");
 
 	//客户端接收来自服务端的消息
 	while (1) 
     {
 		bzero(&rec, sizeof(rec));
 		ret = recv(skfd_pkt, &rec, sizeof(rec), 0);
+        c_log_debug("recv a route: %s, len:%d\n", rec, ret);
         pthread_testcancel();
-		if(-1 == ret) c_log_debug("recv failed");// 切换到备用控制器，待完成
+		if(-1 == ret) c_log_debug("recv failed\n");// 切换到备用控制器，待完成
+        if(0 == ret) return NULL;    // 连接关闭
         // type:1,sw:3,ip_src:8,ip_dst:8,outport:3,timeout:3
         // %d%03d%s%s%03d%03d
 		else if(ret > 0) 
@@ -401,19 +426,22 @@ void* pkt_listen(void *arg)
             sscanf(&rec[4], "%x", &nw_src);
             nw_src = htonl(nw_src);
             rec[4] = '\0';
-            sscanf(&rec[1], "%d", &sw_dpid);
-			switch (rec[0])
+            sscanf(&rec[1], "%ld", &sw_dpid);
+            // c_log_debug("nw_src:%x, nw_dst:%x, sw_dpid:%ld, outport:%d, timeout:%d\n", ntohl(nw_src), ntohl(nw_dst), sw_dpid, outport, timeout);
+			switch (rec[0] - '0')
             {
             case ROUTE_ADD:
-                if(timeout == 5)
+                if(timeout == 5 || timeout == 0)
                 {
-                    hello_add_flow_transport(sw_dpid, nw_src, nw_dst, (uint32_t)-1, outport, timeout, PRO_NORMAL);
+                    hello_add_flow_transport(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, timeout, PRO_NORMAL);
                 }else{
-                    hello_add_flow_transport(sw_dpid, nw_src, nw_dst, (uint32_t)-1, outport, int(SLOT_TIME + (slot_start_tvl - hello_get_timeval())/1000), PRO_NORMAL);
+                    timenow = hello_get_timeval();
+                    timeout = (timenow - slot_start_tvl)/1000000;
+                    hello_add_flow_transport(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, timeout, PRO_NORMAL);
                 }
                 break;
             case ROUTE_DEL:
-                hello_del_flow(sw_dpid, nw_src, nw_dst);
+                hello_del_flow(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst);
                 break;
             default:
                 break;
@@ -423,7 +451,7 @@ void* pkt_listen(void *arg)
 	}
 }
 
-void* slot_change_listen(void *arg)
+void* slot_change_listen(void *arg UNUSED)
 {
     struct sockaddr_in srvaddr;
 	socklen_t len = sizeof(srvaddr);
@@ -436,9 +464,10 @@ void* slot_change_listen(void *arg)
 
 	srvaddr.sin_family = AF_INET;
 	srvaddr.sin_port = htons(SLOT_LiSTEN_PORT);
-	srvaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	srvaddr.sin_addr.s_addr = inet_addr(local_ip);
 
 	// 绑定本地IP和端口
+    printf("slot_change_listen starting!\n");
 	bind(skfd_slot, &srvaddr, len);
 
 	while(1)
@@ -450,10 +479,10 @@ void* slot_change_listen(void *arg)
         // 读取配置文件
         fp = fopen(CONF_FILE_PATH, "r");
         if(fp == NULL) return 0;
-        fscanf(fp, "%d", &slot_no);
-        fscanf(fp, "%s", &local_ip[11]);
-        ctrl_id = atoi(&local_ip[11]);
-        fscanf(fp, "%s", &tmp[11]);
+        if(fscanf(fp, "%d", &slot_no)<1)return NULL;
+        if(fscanf(fp, "%s", &local_ip[11])<1)return NULL;
+        ctrl_id = atoi(&local_ip[11]) -1;
+        if(fscanf(fp, "%s", &tmp[11])<1)return NULL;
         fclose(fp);
         for(i=0; i<3; i++)
         {
@@ -480,86 +509,97 @@ void* slot_change_listen(void *arg)
     return NULL;
 }
 
-void* flow_issue_ctrl(void *arg)
+void* flow_issue_ctrl(void *arg UNUSED)
 {
     int i;
+    printf("flow_issue_ctrl starting!\n");
 
     while(1)
     {
         for(i = 0; i<SW_NUM; i++)
         {
-            if(sw_list[i] == ctrl_id)
+            if(sw_list[i].ctrl_no == ctrl_id)
             {
-                hello_add_flow_to_ctrl(sw_list[i].sw_dpid, 3, PRO_SW2CTRL);
+                hello_add_flow_to_ctrl(i+SW_DPID_OFFSET, 5, PRO_SW2CTRL);
+                // printf("flow_issue_ctrl sw:%x\n", sw_list[i].sw_dpid);
             }
         }
         pthread_testcancel();
-        sleep(4.5);
+        sleep(4);
     }
     return NULL;
 }
 
-RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], uint32_t buffer_id)
+RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
 {
-    uint64_t sw_src = (nw_src >> 24)& 0x000000ff;
-    uint64_t sw_dst = (nw_dst >> 24)& 0x000000ff;
+    uint64_t sw_src = ((nw_src >> 24)& 0x000000ff) -1;
+    uint64_t sw_dst = ((nw_dst >> 24)& 0x000000ff) -1;
     tp_link * tmp = NULL;  // 迭代的中间变量
-    int i = 0;
-    int sw_min = sw_src;  // 当前迭代的最小的sw
-    int sw_min_weight = 0x0fffffffff;  // 当前迭代的最小的sw的权重
-    uint32_t outport;  
-    int D[SW_NUM][2] = {-1};    // 第一列为权重，第二列为前序节点，第三列为前序节点转发的出端口
-    char rt[SW_NUM] = {'\0'};
+    int i = 0, j = 0;
+    int sw_min = sw_src -1;  // 当前迭代的最小的sw
+    int sw_min_weight = 0x0fffffff;  // 当前迭代的最小的sw的权重
+    // uint32_t outport = 0;  
+    int D[SW_NUM][3];    // 第一列为权重，第二列为是否已经确定路径(-1为未确定，1为确定)，第三列为前序节点
+    char rt[1028] = {'\0'}; 
+    char rt_tmp[8] = {'\0'};
     char c_nw_src[9] = {'\0'};
     char c_nw_dst[9] = {'\0'};
 
+    printf("\nnw_src:%x, nw_dst:%x\n", ntohl(nw_src), ntohl(nw_dst));
+
     // 初始化
+    for(i=0; i<SW_NUM; i++)
+    {
+        D[i][1] = -1;
+        D[i][0] = 0x0fffffff;
+    }
     D[sw_src][0] = 0;
-    D[sw_src][1] = sw_src;
+    D[sw_src][1] = 1;
+    D[sw_src][2] = sw_src;
     tmp = sw_list[sw_src].list_link;
     while(tmp != NULL)
     {
         D[tmp->sw_adj_dpid][0] = tmp->delay;
-        D[tmp->sw_adj_dpid][1] = sw_src;
+        D[tmp->sw_adj_dpid][2] = sw_src;
         tmp = tmp->next;
     }
 
     while(true)
     {
-        for(i=0; i<SW_NUM; i++)
+        for(i=0; i<SW_NUM; i++) //找未确认的最小的点
         {
             if(D[i][1] == -1 && D[i][0] < sw_min_weight)
             {
                 sw_min = i;
+                sw_min_weight = D[i][0];
             }
         }
+        // printf("sw_min:%x\n", sw_min);
         if(sw_min == sw_dst)
         {
-            // 找到了路径，一起写
-            i = SW_NUM-2;
-            outport = sw_min + 1000;
-            rt[i--] = (char)sw_min;
-            sw_min = D[sw_min][1];
-            while(sw_min != sw_src)
-            {
-                // 写入数据库
-                if(sw_list[sw_min].ctrl_no == ctrl_id)  // 本控制下的直接下发
-                {
-                    hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, (uint32_t)-1, outport, 0, PRO_NORMAL);
-                }
-                outport = sw_min + 1000;
-                rt[i--] = (char)sw_min;
-                sw_min = D[sw_min][1];
-            }
-            // 写入数据库
-            rt[i] = (char)sw_min;
             sprintf(c_nw_src, "%08x", ntohl(nw_src));
             sprintf(c_nw_dst, "%08x", ntohl(nw_dst));
-            Set_Cal_Route(c_nw_src, c_nw_dst, rt, slot_no, proxy_ip);
-            hello_add_flow_transport((uint64_t)sw_min, nw_src, nw_dst, buffer_id, outport, 0, PRO_NORMAL);
+            // 找到了路径，一起写
+            i=1026;
+            i-=7;
+            sprintf(rt_tmp, "%03d%03d ", D[sw_min][2], sw_min);
+            c_log_debug("sw_min:%d\n",sw_min);
+            for(j=0;j<7;j++)rt[i+j]=rt_tmp[j];
+            sw_min = D[sw_min][2];
+            while(sw_min != sw_src)
+            {
+                c_log_debug("sw_min:%d\n",sw_min);
+                i-=7;
+                sprintf(rt_tmp, "%03d%03d ", D[sw_min][2], sw_min);
+                for(j=0;j<7;j++)rt[i+j]=rt_tmp[j];
+                sw_min = D[sw_min][2];
+            }
+            c_log_debug("sw_min:%d\n",sw_min);
+            Set_Cal_Route(c_nw_src, c_nw_dst, &rt[i], proxy_ip);
             return SUCCESS;
         }
         if(D[sw_min][1] != -1)return FAILURE;   // 找不到路径
+        D[sw_min][1] = 1;   //确认
         // 更新权重
         tmp = sw_list[sw_min].list_link;
         while(tmp != NULL)
@@ -567,12 +607,22 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM], 
             if(D[sw_min][0] + tmp->delay < D[tmp->sw_adj_dpid][0])
             {
                 D[tmp->sw_adj_dpid][0] = D[sw_min][0] + tmp->delay;
-                D[tmp->sw_adj_dpid][1] = sw_min;
+                D[tmp->sw_adj_dpid][2] = sw_min;
             }
             tmp = tmp->next;
         }
-        sw_min_weight = 0x0fffffffff;
+        sw_min_weight = 0x0fffffff;
     }
 
     return FAILURE;
 }
+
+uint64_t hello_get_timeval(void)    // 获取时间戳
+{
+    struct timeval t;
+    gettimeofday(&t, 0);
+    return t.tv_sec*1000000 + t.tv_usec;//us
+}
+
+module_init(hello_module_init);
+module_vty_init(hello_module_vty_init);

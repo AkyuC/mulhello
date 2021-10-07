@@ -6,6 +6,10 @@
 #define SW_NUM 66
 #define SLOT_TIME 40
 
+#ifndef SLOT_NUM
+#define SLOT_NUM 44
+#endif
+
 #ifndef RETURN_RESULT
 #define RETURN_RESULT
 typedef enum RET_RESULT
@@ -15,20 +19,22 @@ typedef enum RET_RESULT
 } RET_RESULT;
 #endif
 
-#define PRO_SW2CTRL 45  // 上传到控制器的流表优先级
-#define PRO_NORMAL 50   // 普通的流表优先级
+#define PRO_CTRL 100   // 控制通道流表优先级
+#define PRO_SW2CTRL 40  // 上传到控制器的流表优先级
+#define PRO_NORMAL 60   // 普通的流表优先级
+#define PRO_DEFAULT 20   // 默认流表优先级
 
 #define TABLE_NORMAL 0  // 普通流表项所在table
 #define TABLE_DEFAULT 1 // 默认流表项所在table
 
+#define SW_DPID_OFFSET 1000 //防止由于交换机是0开始的编号，设置的偏移量
+
 #define ROUTE_ADD 1 // type_1 add
 #define ROUTE_DEL 2 // type_2 del
 
-uint64_t hello_get_timeval(void)    // 获取时间戳
-{
-    struct timeval t;
-    gettimeofday(&t, 0);
-    return t.tv_sec*1000000 + t.tv_usec;//us
-}
+#define CONF_FILE_PATH "/home/ctrl_connect"
+#define PROXY_PORT 2345  // 数据库监听的端口
+#define SLOT_LiSTEN_PORT 12000  // 本地时间片切换时，需要知道时间片切换，收消息的套接字
+#define BUFSIZE 512 // 套接字缓存大小
 
 #endif
