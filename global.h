@@ -4,7 +4,7 @@
 #include <sys/time.h>
 
 #define SW_NUM 66
-#define SLOT_TIME 40
+#define SLOT_TIME 80
 
 #ifndef SLOT_NUM
 #define SLOT_NUM 44
@@ -21,7 +21,7 @@ typedef enum RET_RESULT
 
 #define PRO_CTRL 100   // 控制通道流表优先级
 #define PRO_SW2CTRL 40  // 上传到控制器的流表优先级
-#define PRO_NORMAL 60   // 普通的流表优先级
+#define PRO_NORMAL 120   // 普通的流表优先级
 #define PRO_DEFAULT 20   // 默认流表优先级
 
 #define TABLE_NORMAL 0  // 普通流表项所在table

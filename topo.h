@@ -25,7 +25,7 @@ typedef struct tp_sw_t
 }tp_sw;
 
 /**
- * store the link(switch_switch or host_switch)
+ * store the link(switch_switch or host_switch)无向的
  * @sw_dpid: switch id
  * @port: link port
  * @delay: link delay
@@ -50,7 +50,7 @@ tp_link* tp_get_link_in_head(tp_link *head, uint32_t dpid);
 void __tp_head_add_link(tp_sw *head, tp_link * n);
 
 /**
- * delete a link in topo
+ * delete a link in topo 无向的
  * @sw_dpid: switch id
  * @sw_list: 想要加的目标列表
  * @return: success 1, Failure -1
@@ -85,5 +85,23 @@ RET_RESULT tp_get_link_delay(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_li
  * @sw_list: 目标列表
  */
 void tp_distory(tp_sw sw_list[SW_NUM]);
+
+/**
+ * store the link(switch_switch or host_switch)有向的
+ * @sw_dpid: switch id
+ * @port: link port
+ * @delay: link delay
+ * @sw_list: 想要加的目标列表
+ * @return: success 1, Failure -1
+ */
+RET_RESULT tp_add_link_vector(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM]);
+
+/**
+ * delete a link in topo 有向的
+ * @sw_dpid: switch id
+ * @sw_list: 想要加的目标列表
+ * @return: success 1, Failure -1
+ */
+RET_RESULT tp_delete_link_vector(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM]);
 
 #endif

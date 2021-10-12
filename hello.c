@@ -56,6 +56,7 @@ pthread_t pid_ctrl; // 定时下发上传控制器的流表线程
 int skfd_ctrl = -1;  // 定时下发上传控制器的流表线程的套接字
 
 tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得到的
+tp_sw sw_list_explore[SW_NUM];  // 当前控制器探知到的拓扑
 
 uint64_t slot_start_tvl = 0;    // 时间片开始的时间戳
 
@@ -102,7 +103,8 @@ hello_sw_add(mul_switch_t *sw)
     hello_install_dfl_flows(sw->dpid);
     // 添加到数据库当中，表示该交换机所属于这个控制器
     sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no = ctrl_id;
-    Add_Sw_Set(ctrl_id, sw->dpid-SW_DPID_OFFSET, slot_no, proxy_ip);
+    sw_list_explore[sw->dpid-SW_DPID_OFFSET].ctrl_no = ctrl_id;
+    Add_Conn_Ctrl(sw->dpid-SW_DPID_OFFSET, ctrl_id, proxy_ip);
     c_log_debug("hello_sw_add ctrl_id:%x ctrl_no:%x end",ctrl_id,sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no);
 }
 
@@ -116,14 +118,54 @@ hello_sw_add(mul_switch_t *sw)
 static void
 hello_sw_del(mul_switch_t *sw)
 {
-    uint64_t timenow = hello_get_timeval();
-    if((SLOT_TIME + (slot_start_tvl - timenow)/1000) < 2) return;
+    sw_list_explore[sw->dpid-SW_DPID_OFFSET].ctrl_no = -1;
     c_log_debug("\t\nswitch dpid 0x%llx left network", (unsigned long long)(sw->dpid-SW_DPID_OFFSET));
     // 将数据库当中的交换机所属删除，或者设置为初始值，表示现在这个交换机没有连接到控制器
     sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no = -1;
-    Del_Sw_Set(ctrl_id, sw->dpid-SW_DPID_OFFSET, slot_no, proxy_ip);
+    Del_Conn_Ctrl(sw->dpid-SW_DPID_OFFSET, ctrl_id, proxy_ip);
     c_log_debug("hello_sw_del end");
 }
+
+
+/**
+ * hello_port_add_cb -
+ *
+ * Application port add callback 
+ */
+static void
+hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
+{
+    if(port->port_no != 0xfffe && port->port_no < 1999)
+    {
+        tp_add_link_vector(sw->dpid - SW_DPID_OFFSET, port->port_no, port->port_no-SW_DPID_OFFSET, sw->dpid, 0, sw_list_explore);
+        c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
+        // 将此链路添加到数据库，设置为当前时间片以及确认的链路
+        Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
+        c_log_debug("hello_port_add_cb end");
+    }
+}
+
+/**
+ * hello_port_del_cb -
+ *
+ * Application port del callback 
+ */
+static void
+hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
+{   
+    int db_id = atoi(&proxy_ip[11]) -1;
+    if(port->port_no != 0xfffe && port->port_no < 1999)
+    {
+        tp_delete_link_vector(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, sw_list_explore);
+        if(sw_list_explore[sw->dpid-SW_DPID_OFFSET].ctrl_no == -1) return;
+        c_log_debug("\t\nhello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
+        // 将此链路从数据库中的当前时间片中删除
+        Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
+        Set_Fail_Link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
+        c_log_debug("hello_port_del_cb end");
+    }
+}
+
 
 /**
  * hello_packet_in -
@@ -209,42 +251,6 @@ hello_core_reconn(void)
     c_log_debug("hello_core_reconn end");
 }
 
-/**
- * hello_port_add_cb -
- *
- * Application port add callback 
- */
-static void
-hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
-{
-    if(port->port_no != 0xfffe && port->port_no < 1999)
-    {
-        c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
-        // 将此链路添加到数据库，设置为当前时间片以及确认的链路
-        Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
-        c_log_debug("hello_port_add_cb end");
-    }
-}
-
-/**
- * hello_port_del_cb -
- *
- * Application port del callback 
- */
-static void
-hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
-{
-    uint64_t timenow = hello_get_timeval();
-    
-    if(port->port_no != 0xfffe && (SLOT_TIME + (slot_start_tvl - timenow)/1000) >= 2 && port->port_no < 1999)
-    {
-        c_log_debug("\t\nhello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
-        // 将此链路从数据库中的当前时间片中删除
-        Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
-        c_log_debug("hello_port_del_cb end");
-    }
-}
-
 /* Network event callbacks */
 struct mul_app_client_cb hello_app_cbs = {
     .switch_priv_alloc = NULL,
@@ -301,6 +307,8 @@ hello_module_init(void *base_arg)
     {
         sw_list[ret].ctrl_no = -1;
         sw_list[ret].sw_dpid = ret;
+        sw_list_explore[ret].ctrl_no = -1;
+        sw_list_explore[ret].sw_dpid = ret;
     }
 
     if(load_conf())
@@ -383,6 +391,7 @@ void* pkt_listen(void *arg UNUSED)
     uint32_t nw_dst = 0;
     uint32_t timeout = 0;
     uint64_t timenow = 0;
+    int i = 0;
 
 	skfd_pkt = socket(AF_INET, SOCK_STREAM, 0);
 	if ( -1 == skfd_pkt) {
@@ -405,9 +414,10 @@ void* pkt_listen(void *arg UNUSED)
 	//客户端接收来自服务端的消息
 	while (1) 
     {
-		bzero(&rec, sizeof(rec));
-		ret = recv(skfd_pkt, &rec, sizeof(rec), 0);
-        c_log_debug("recv a route: %s, len:%d\n", rec, ret);
+		// bzero(&rec, sizeof(rec));
+        memset(rec, 0, BUFSIZE);
+		ret = recv(skfd_pkt, rec, BUFSIZE, 0);
+
         pthread_testcancel();
 		if(-1 == ret) c_log_debug("recv failed\n");// 切换到备用控制器，待完成
         if(0 == ret) return NULL;    // 连接关闭
@@ -415,20 +425,28 @@ void* pkt_listen(void *arg UNUSED)
         // %d%03d%s%s%03d%03d
 		else if(ret > 0) 
 		{
-            rec[26] = '\0';
-            sscanf(&rec[23], "%d", &timeout);
-            rec[23] = '\0';
-            sscanf(&rec[20], "%d", &outport);
-            rec[20] = '\0';
-            sscanf(&rec[12], "%x", &nw_dst);
+            for(i = 0; i < ret; i++)
+            {
+                if(rec[i] != 0) break;
+            }
+            if(i == ret) continue;
+
+            c_log_debug("recv a route: %s, len:%d\n", &rec[i], ret); // TCP 粘包
+
+            rec[i + 26] = '\0';
+            sscanf(&rec[i + 23], "%d", &timeout);
+            rec[i + 23] = '\0';
+            sscanf(&rec[i + 20], "%d", &outport);
+            rec[i + 20] = '\0';
+            sscanf(&rec[i + 12], "%x", &nw_dst);
             nw_dst = htonl(nw_dst);
-            rec[12] = '\0';
-            sscanf(&rec[4], "%x", &nw_src);
+            rec[i + 12] = '\0';
+            sscanf(&rec[i + 4], "%x", &nw_src);
             nw_src = htonl(nw_src);
-            rec[4] = '\0';
-            sscanf(&rec[1], "%ld", &sw_dpid);
+            rec[i + 4] = '\0';
+            sscanf(&rec[i + 1], "%ld", &sw_dpid);
             // c_log_debug("nw_src:%x, nw_dst:%x, sw_dpid:%ld, outport:%d, timeout:%d\n", ntohl(nw_src), ntohl(nw_dst), sw_dpid, outport, timeout);
-			switch (rec[0] - '0')
+			switch (rec[i + 0] - '0')
             {
             case ROUTE_ADD:
                 if(timeout == 5 || timeout == 0)
@@ -458,6 +476,7 @@ void* slot_change_listen(void *arg UNUSED)
     char buf[BUFSIZE], tmp[20] = "192.168.68.";
     int ret, i;
     FILE * fp = NULL;
+    tp_link * sw_tmp;
 
 	bzero(&srvaddr, len);
     skfd_slot = socket(AF_INET, SOCK_DGRAM, 0);
@@ -483,6 +502,7 @@ void* slot_change_listen(void *arg UNUSED)
         if(fscanf(fp, "%s", &local_ip[11])<1)return NULL;
         ctrl_id = atoi(&local_ip[11]) -1;
         if(fscanf(fp, "%s", &tmp[11])<1)return NULL;
+        
         fclose(fp);
         for(i=0; i<3; i++)
         {
@@ -503,7 +523,20 @@ void* slot_change_listen(void *arg UNUSED)
                     break;
             }
         }
+        c_log_debug("时间片切换到时间片%d", slot_no);
         memset(&tmp[11], 0, 3);
+        for(i=0; i<SW_NUM; i++)
+        {
+            if(sw_list_explore[i].ctrl_no!=ctrl_id)continue;
+            c_log_debug("添加所控制的sw%d", i);
+            Add_Conn_Ctrl(i, ctrl_id, proxy_ip);
+            sw_tmp = sw_list_explore[i].list_link;
+            while(sw_tmp != NULL)
+            {
+                Add_Real_Topo(i, sw_tmp->sw_adj_dpid, slot_no, proxy_ip);
+                sw_tmp = sw_tmp->next;
+            }
+        }
 		// printf("%s", buf);
 	}
     return NULL;
@@ -525,7 +558,7 @@ void* flow_issue_ctrl(void *arg UNUSED)
             }
         }
         pthread_testcancel();
-        sleep(4);
+        sleep(5);
     }
     return NULL;
 }

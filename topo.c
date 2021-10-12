@@ -115,3 +115,34 @@ void tp_distory(tp_sw sw_list[SW_NUM])
         sw_list[i].list_link = NULL;
     }
 }
+
+RET_RESULT tp_add_link_vector(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, uint32_t port2, uint64_t delay, tp_sw sw_list[SW_NUM])
+{
+    tp_link *sw1tosw2;
+
+    if(tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj))return FAILURE;
+    
+    sw1tosw2 = malloc(sizeof(tp_link));
+    memset(sw1tosw2, 0, sizeof(tp_link));
+
+    sw1tosw2->sw_adj_dpid = sw_dpid_adj;
+    sw1tosw2->port = port1;
+    sw1tosw2->port_adj = port2;
+    sw1tosw2->delay = delay;
+
+    __tp_head_add_link(&sw_list[sw_dpid], sw1tosw2);
+
+    return SUCCESS;
+}
+
+RET_RESULT tp_delete_link_vector(uint32_t sw_dpid, uint32_t sw_dpid_adj, tp_sw sw_list[SW_NUM])
+{
+    tp_link *del_n1;
+
+    del_n1 = tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj);
+
+    if(del_n1 == NULL)return FAILURE;
+    if(del_n1)__tp_delete_link_in_head(del_n1);
+
+    return SUCCESS;
+}
