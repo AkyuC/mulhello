@@ -32,9 +32,13 @@ typedef enum RET_RESULT
 #define ROUTE_ADD 1 // type_1 add
 #define ROUTE_DEL 2 // type_2 del
 
-#define CONF_FILE_PATH "/home/ctrl_connect"
+#define CONF_FILE_PATH "/home/ctrl2db"
 #define PROXY_PORT 2345  // 数据库监听的端口
 #define SLOT_LiSTEN_PORT 12000  // 本地时间片切换时，需要知道时间片切换，收消息的套接字
 #define BUFSIZE 512 // 套接字缓存大小
+
+#define SLOT_NUM 44
+#define SW_NUM 66
+#define DB_NUM 6
 
 #endif

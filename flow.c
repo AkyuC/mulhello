@@ -111,12 +111,15 @@ RET_RESULT hello_del_flow(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst)
 
     if(mul_app_send_flow_del(HELLO_APP_NAME, NULL, sw_dpid, &fl, &mask, 0, 0, PRO_NORMAL, 0)!=0)
     {
+        c_log_debug("hello_del_flow ip fail!");
         return FAILURE;
     }
     fl.dl_type = htons(ETH_TYPE_IP);
     if(mul_app_send_flow_del(HELLO_APP_NAME, NULL, sw_dpid, &fl, &mask, 0, 0, PRO_NORMAL, 0)!=0)
     {
+        c_log_debug("hello_del_flow arp fail!");
         return FAILURE;
     }
+    c_log_debug("hello_del_flow success!");
     return SUCCESS;
 }
