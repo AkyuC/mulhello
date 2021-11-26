@@ -467,12 +467,22 @@ RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip)
 
 RET_RESULT rt_recv(void)
 {
-    int ret = -1, i = 0;
-    char rec[BUFSIZE*2] = {0};
+    int ret = 0, i = 0, all_ret=0;
+    char rec[BUFSIZE] = {0};
 
 	//客户端接收来自服务端的消息
     memset(rec, 0, BUFSIZE);
-    ret = recv(skfd_rt, rec, BUFSIZE*2, 0);
+    while(all_ret != BUFSIZE)
+    {
+        ret = recv(skfd_rt, &rec[all_ret], BUFSIZE - all_ret, 0);
+        c_log_debug("all_ret: %d, ret", all_ret, ret);
+        if(-1 == ret || 0 == ret) 
+        {
+            skfd_rt = -1;
+            return FAILURE; // 切换数据库
+        }
+        all_ret += ret;
+    }
 
     if(-1 == ret || 0 == ret) 
     {

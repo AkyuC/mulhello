@@ -21,7 +21,7 @@ typedef enum RET_RESULT
 
 #define PRO_CTRL 100   // 控制通道流表优先级
 #define PRO_SW2CTRL 40  // 上传到控制器的流表优先级
-#define PRO_NORMAL 120   // 普通的流表优先级
+#define PRO_NORMAL 100   // 普通的流表优先级
 #define PRO_DEFAULT 20   // 默认流表优先级
 
 #define TABLE_NORMAL 0  // 普通流表项所在table
