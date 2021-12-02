@@ -107,12 +107,12 @@ hello_sw_add(mul_switch_t *sw)
     hello_install_dfl_flows(sw->dpid);
     hello_add_flow_to_ctrl(sw->dpid, 0, PRO_SW2CTRL);
     // 添加到数据库当中，表示该交换机所属于这个控制器
-    while(!is_connDB)
+    while(Set_Ctrl_Conn_Db(ctrl_id, db_id, proxy_ip) == FAILURE)
     {
         c_log_debug("hello_sw_add, Cant connect to db");
         sleep(1);
     }
-    Set_Ctrl_Conn_Db(ctrl_id, db_id, proxy_ip);
+
     c_log_debug("hello_sw_add ctrl_id:%x ctrl_no:%x end",ctrl_id,sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no);
 }
 
@@ -144,12 +144,12 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
     {
         c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
-        while(!is_connDB)
+        while(Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_add_cb, Cant connect to db");
             sleep(1);
         }
-        Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip);
+
         c_log_debug("hello_port_add_cb end");
     }
 }
@@ -167,12 +167,11 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
     {
         c_log_debug("\t\nhello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
         // 将此链路从数据库中的当前时间片中删除
-        while(!is_connDB)
+        while(Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_del_cb, Cant connect to db");
             sleep(1);
         }
-        Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, proxy_ip);
         Set_Fail_Link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
         c_log_debug("hello_port_del_cb end");
     }
@@ -202,12 +201,11 @@ hello_packet_in(mul_switch_t *sw UNUSED,
     c_log_info("\nhello app - packet-in from network src %x - dst %x", fl->ip.nw_src, fl->ip.nw_dst);
     tp_distory(sw_list);
     // 更新拓扑
-    while(!is_connDB)
+    while(Get_Real_Topo(proxy_ip, sw_list) == FAILURE)
     {
         c_log_debug("hello_packet_in, Cant connect to db");
         sleep(1);
     }
-    Get_Real_Topo(proxy_ip, sw_list);
     Set_Del_Link(slot_no, proxy_ip, sw_list);
     c_log_debug("Get_Real_Topo end");
     // 计算路由
@@ -475,7 +473,7 @@ RET_RESULT rt_recv(void)
     while(all_ret != BUFSIZE)
     {
         ret = recv(skfd_rt, &rec[all_ret], BUFSIZE - all_ret, 0);
-        c_log_debug("all_ret: %d, ret", all_ret, ret);
+        c_log_debug("all_ret: %d, ret: %d", all_ret, ret);
         if(-1 == ret || 0 == ret) 
         {
             skfd_rt = -1;
@@ -606,7 +604,8 @@ void* socket_listen(void *arg UNUSED)
                     if(conn_db(slot_no) == FAILURE)
                     {
                         //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl s%d del-controller;ovs-vsctl get bridge s%d stp_enable", ctrl_id, ctrl_id);
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id);
+                        c_log_debug("孤岛，%s", buf);
                         while(system(buf) == -1) //执行失败
                         {
                             c_log_debug("孤岛，设置stp失败");
@@ -625,7 +624,8 @@ void* socket_listen(void *arg UNUSED)
                     if(conn_db(slot_no) == FAILURE)   
                     {
                         //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl s%d del-controller;ovs-vsctl get bridge s%d stp_enable", ctrl_id, ctrl_id);
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id);
+                        c_log_debug("孤岛，%s", buf);
                         while(system(buf) == -1) //执行失败
                         {
                             c_log_debug("孤岛，设置stp失败");
@@ -647,7 +647,8 @@ void* socket_listen(void *arg UNUSED)
 
 RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
 {
-    uint64_t sw_src = ((nw_src >> 24)& 0x000000ff) -1;
+    // uint64_t sw_src = ((nw_src >> 24)& 0x000000ff) -1;
+    uint64_t sw_src = ctrl_id;
     uint64_t sw_dst = ((nw_dst >> 24)& 0x000000ff) -1;
     tp_link * tmp = NULL;  // 迭代的中间变量
     int i = 0, j = 0,  k = 0;
