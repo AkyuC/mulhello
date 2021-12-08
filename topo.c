@@ -7,7 +7,7 @@ RET_RESULT tp_add_link(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid_adj, u
     tp_link *sw1tosw2;
     tp_link *sw2tosw1;
 
-    if(tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj))return FAILURE;
+    if(tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj) != NULL)return FAILURE;
     
     sw1tosw2 = malloc(sizeof(tp_link));
     sw2tosw1 = malloc(sizeof(tp_link));
@@ -34,10 +34,10 @@ tp_link* tp_get_link_in_head(tp_link *head, uint32_t dpid)
     tp_link * ret = head;
     while(ret != NULL)
     {
-        if(ret->sw_adj_dpid == dpid)break;
+        if(ret->sw_adj_dpid == dpid)return ret;
         ret = ret->next;
     }
-    return ret;
+    return NULL;
 }
 
 void __tp_head_add_link(tp_sw *head, tp_link * n)
@@ -120,7 +120,7 @@ RET_RESULT tp_add_link_vector(uint32_t sw_dpid, uint32_t port1, uint32_t sw_dpid
 {
     tp_link *sw1tosw2;
 
-    if(tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj))return FAILURE;
+    if(tp_get_link_in_head(sw_list[sw_dpid].list_link, sw_dpid_adj) != NULL)return FAILURE;
     
     sw1tosw2 = malloc(sizeof(tp_link));
     memset(sw1tosw2, 0, sizeof(tp_link));

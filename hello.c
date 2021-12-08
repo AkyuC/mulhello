@@ -60,6 +60,7 @@ int is_connDB = 0;  // 全局判断是否已经连接上数据库
 int is_connSW = 0;  // 全局判断是否已经连接上卫星交换机
 
 tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得到的
+tp_sw sw_adj_list[SW_NUM];      // 当前卫星交换机的邻近卫星交换机
 
 int load_conf(void); // 读取配置文件
 void* socket_listen(void *arg UNUSED);    // 套接字管理线程
@@ -143,13 +144,14 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
     if(port->port_no != 0xfffe && port->port_no < 1999)
     {
         c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
+        tp_add_link(sw->dpid - SW_DPID_OFFSET, port->port_no, port->port_no-SW_DPID_OFFSET, sw->dpid, 0, sw_adj_list);  // 记录邻居
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
         while(Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_add_cb, Cant connect to db");
             sleep(1);
         }
-
+        c_log_debug("hello_port_add_cb db_ip:%s", proxy_ip);
         c_log_debug("hello_port_add_cb end");
     }
 }
@@ -165,14 +167,19 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
     int db_id = atoi(&proxy_ip[11]) -1;
     if(port->port_no != 0xfffe && port->port_no < 1999)
     {
-        c_log_debug("\t\nhello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
+        c_log_debug("hello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
+        tp_delete_link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, sw_adj_list);// 删除记录邻居
+        sleep(2);   // 与可能需要连接数据库的时间错开
         // 将此链路从数据库中的当前时间片中删除
         while(Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_del_cb, Cant connect to db");
             sleep(1);
         }
+        c_log_debug("hello_port_del_cb db_ip:%s", proxy_ip);
+        Del_Real_Topo(port->port_no-SW_DPID_OFFSET, sw->dpid - SW_DPID_OFFSET, proxy_ip);
         Set_Fail_Link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
+        // Set_Fail_Link(port->port_no-SW_DPID_OFFSET, sw->dpid - SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
         c_log_debug("hello_port_del_cb end");
     }
 }
@@ -388,7 +395,7 @@ RET_RESULT rt_set2sw(char* rec)
     int i = 0;
 
     rec[i + 26] = '\0';
-        sscanf(&rec[i + 23], "%d", &timeout);
+    sscanf(&rec[i + 23], "%d", &timeout);
     rec[i + 23] = '\0';
     sscanf(&rec[i + 20], "%d", &outport);
     rec[i + 20] = '\0';
@@ -403,6 +410,19 @@ RET_RESULT rt_set2sw(char* rec)
     switch (rec[i + 0] - '0')
     {
     case ROUTE_ADD:
+        if(tp_get_link_in_head(sw_adj_list[sw_dpid].list_link, outport) == NULL)    //下方的转发卫星交换机不在邻接，设置fail_link
+        {
+            // c_log_debug("rt_set2sw s%ld dont find adj s%d", sw_dpid, outport);
+            while(Del_Real_Topo(sw_dpid, outport, proxy_ip) == FAILURE)
+            {
+                c_log_debug("rt_set2sw, Cant connect to db");
+                sleep(1);
+            }
+            Del_Real_Topo(outport, sw_dpid, proxy_ip);
+            // Set_Fail_Link(sw_dpid, outport, db_id, slot_no, proxy_ip);
+            // Set_Fail_Link(outport, sw_dpid, db_id, slot_no, proxy_ip);
+            break;
+        }
         return hello_add_flow_transport(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, 0, PRO_NORMAL);
         break;
     case ROUTE_DEL:
@@ -502,7 +522,7 @@ RET_RESULT rt_recv(void)
             c_log_debug("rt_recv, Cant connect to sw");
             sleep(1);
         }
-        return rt_set2sw(&rec[i]);
+        rt_set2sw(&rec[i]);
     }
     return SUCCESS;
 }
@@ -536,8 +556,8 @@ RET_RESULT conn_db(int slot_no)
         if(-1 != ret) 
         {
             c_log_debug("slot_%d connect db%d success", slot_no, ctrl2db[slot_no][i]);
-            is_connDB = 1;
             db_id = ctrl2db[slot_no][i];
+            is_connDB = 1;
             // ioctl(skfd_rt, FIONBIO, 1);
             setsockopt(skfd_rt, SOL_SOCKET, SO_KEEPALIVE, (void *)&keepAlive, sizeof(keepAlive));
             setsockopt(skfd_rt, SOL_TCP, TCP_KEEPIDLE, (void*)&keepIdle, sizeof(keepIdle));
@@ -596,6 +616,8 @@ void* socket_listen(void *arg UNUSED)
                 slot_no = atoi(buf);
                 if(skfd_rt == -1 || db_id != ctrl2db[slot_no][0])   // 没有连接过数据库，或者需要连接到更加近的数据库
                 {
+                    //db连接断开
+                    is_connDB = 0;
                     c_log_debug("skfd_rt=%d, db_id=%d, ctrl2db=%d", skfd_rt, db_id, ctrl2db[slot_no][0]);
                     if(skfd_rt != -1)
                     {
@@ -604,7 +626,7 @@ void* socket_listen(void *arg UNUSED)
                     if(conn_db(slot_no) == FAILURE)
                     {
                         //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id);
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
                         c_log_debug("孤岛，%s", buf);
                         while(system(buf) == -1) //执行失败
                         {
@@ -621,10 +643,14 @@ void* socket_listen(void *arg UNUSED)
                 {
                     //db连接断开
                     is_connDB = 0;
+                    if(skfd_rt != -1)
+                    {
+                        close(skfd_rt);
+                    }
                     if(conn_db(slot_no) == FAILURE)   
                     {
                         //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id);
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
                         c_log_debug("孤岛，%s", buf);
                         while(system(buf) == -1) //执行失败
                         {
