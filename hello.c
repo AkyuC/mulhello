@@ -678,7 +678,7 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
     uint64_t sw_dst = ((nw_dst >> 24)& 0x000000ff) -1;
     tp_link * tmp = NULL;  // 迭代的中间变量
     int i = 0, j = 0,  k = 0;
-    int sw_min = sw_src -1;  // 当前迭代的最小的sw
+    int sw_min = ctrl_id;  // 当前迭代的最小的sw
     int sw_min_weight = 0x0fffffff;  // 当前迭代的最小的sw的权重
     // uint32_t outport = 0;  
     int D[SW_NUM][3];    // 第一列为权重，第二列为是否已经确定路径(-1为未确定，1为确定)，第三列为前序节点
@@ -688,7 +688,7 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
     char c_nw_src[9] = {'\0'};
     char c_nw_dst[9] = {'\0'};
 
-    printf("\nnw_src:%x, nw_dst:%x\n", ntohl(nw_src), ntohl(nw_dst));
+    c_log_debug("nw_src:%x, nw_dst:%x", ntohl(nw_src), ntohl(nw_dst));
 
     // 初始化
     for(i=0; i<SW_NUM; i++)
@@ -717,9 +717,11 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
                 sw_min_weight = D[i][0];
             }
         }
+        // c_log_debug("sw_min:%d", sw_min);
         // printf("sw_min:%x\n", sw_min);
         if(sw_min == sw_dst)
         {
+            // c_log_debug("得到路径");
             sprintf(c_nw_src, "%08x", ntohl(nw_src));
             sprintf(c_nw_dst, "%08x", ntohl(nw_dst));
             // 找到了路径，一起写
