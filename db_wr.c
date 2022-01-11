@@ -12,9 +12,12 @@
 
 RET_RESULT redis_connect(redisContext **context, char* redis_ip)
 {
+    struct timeval tv;
+    tv.tv_sec = 5;
+
     if(*context)
         redisFree(*context);
-	*context = redisConnect(redis_ip, REDIS_SERVER_PORT_W);
+	*context = redisConnectWithTimeout(redis_ip, REDIS_SERVER_PORT_W, tv);
     
     if((*context)->err)
     {
@@ -38,6 +41,7 @@ RET_RESULT exeRedisIntCmd(char *cmd, char *redis_ip)
     redisContext *context = NULL;
     redisReply *reply = NULL;
     RET_RESULT ret = redis_connect(&context, redis_ip);
+    if(ret == FAILURE)return ret;
     // usleep(3000);
 
     /*检查入参*/
@@ -50,12 +54,12 @@ RET_RESULT exeRedisIntCmd(char *cmd, char *redis_ip)
 
     /*连接redis*/
 
-    while(ret == FAILURE)
-    {
-        context = NULL;
-        sleep(1);
-        ret = redis_connect(&context, redis_ip); 
-    }
+    // while(ret == FAILURE)
+    // {
+    //     context = NULL;
+    //     sleep(1);
+    //     ret = redis_connect(&context, redis_ip); 
+    // }
 
     /*执行redis命令*/
     reply = (redisReply *)redisCommand(context, cmd);
@@ -406,12 +410,14 @@ RET_RESULT Del_Rt_Set(int slot, char *ip_src, char *ip_dst, char* redis_ip)
     redisReply *reply=NULL;
     uint32_t sw1, sw2;
     int i = 0;
+    struct timeval tv;
+    tv.tv_sec = REDIS_CONN_TIMEOUT;
 
     /*组装Redis命令*/
     snprintf(cmd, CMD_MAX_LENGHT, "lrange calrt_%s%s 0 -1", ip_src, ip_dst);
 
     /*连接redis*/
-    context = redisConnect(redis_ip, REDIS_SERVER_PORT_R);
+    context = redisConnectWithTimeout(redis_ip, REDIS_SERVER_PORT_R, tv);
     if (context->err)
     {
         printf("\tError: %s\n", context->errstr);

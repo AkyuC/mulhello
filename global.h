@@ -41,4 +41,6 @@ typedef enum RET_RESULT
 #define SW_NUM 66
 #define DB_NUM 6
 
+#define REDIS_CONN_TIMEOUT 5 // redis连接超时时间
+
 #endif

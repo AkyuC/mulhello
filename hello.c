@@ -52,15 +52,22 @@ char proxy_ip[20] = "192.168.68.";  // 数据库代理ip
 int db_id = -1;     // 连接的数据库id
 int slot_no = 0;    // 时间片
 int ctrl2db[SLOT_NUM][DB_NUM];    // 每个时间片该控制器连接所有数据库的远近顺序
+int start_sign = 0;
 
 int skfd_rt = -1;  // 和服务器的通信套接字
 pthread_t pid_slot; // 接收时间片切换信号的线程
+pthread_t pid_ping; // ping测试连通的线程
 int skfd_slot = -1; // 获取时间片切换信息的套接字
 int is_connDB = 0;  // 全局判断是否已经连接上数据库
 int is_connSW = 0;  // 全局判断是否已经连接上卫星交换机
+pthread_mutex_t mutex;  // ping和keepalive的互斥锁
+int keepAlive = 1; // 开启keepalive属性
+int keepIdle = 1; // 如该连接在1秒内没有任何数据往来,则进行探测 
+int keepInterval = 1; // 探测时发包的时间间隔为1秒
+int keepCount = 2; // 探测尝试的次数
 
 tp_sw sw_list[SW_NUM];  // 卫星交换机的列表，当前时间片探知得到的
-tp_sw sw_adj_list[SW_NUM];      // 当前卫星交换机的邻近卫星交换机
+int sw_adj_list[SW_NUM] = {0};      // 当前卫星交换机的邻近卫星交换机
 
 int load_conf(void); // 读取配置文件
 void* socket_listen(void *arg UNUSED);    // 套接字管理线程
@@ -68,8 +75,12 @@ int conn_db(int slot_no);   // 连接数据库函数，成功返回SUCCESS，失
 RET_RESULT rt_set2sw(char* rec);    // 流表操作，一条
 int rt_recv(void);  // 路由接收函数，成功返回SUCCESS，失败返回FAILURE
 RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip); // 查看数据库当中是否需要进行流表操作
-RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM]);    // 路由
-RET_RESULT Set_Del_Link(int slot_no, char* redis_ip, tp_sw sw_list[SW_NUM]); 
+RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, uint32_t inport, tp_sw sw_list[SW_NUM]);    // 路由
+RET_RESULT Set_Del_Link(int slot_no, char* redis_ip, tp_sw sw_list[SW_NUM]);
+int sw_closer_db_times = 0;
+int sw_disconnected_db_times = 0;
+void write_sw_times(int ctrl_id, int sw_closer_db_times, int sw_disconnected_db_times); // 统计切换次数
+void * connect_ping(void *arg UNUSED);
 
 /**
  * hello_install_dfl_flows -
@@ -108,10 +119,11 @@ hello_sw_add(mul_switch_t *sw)
     hello_install_dfl_flows(sw->dpid);
     hello_add_flow_to_ctrl(sw->dpid, 0, PRO_SW2CTRL);
     // 添加到数据库当中，表示该交换机所属于这个控制器
+    while(is_connDB != 1) sleep(2);
     while(Set_Ctrl_Conn_Db(ctrl_id, db_id, proxy_ip) == FAILURE)
     {
         c_log_debug("hello_sw_add, Cant connect to db");
-        sleep(1);
+        sleep(2);
     }
 
     c_log_debug("hello_sw_add ctrl_id:%x ctrl_no:%x end",ctrl_id,sw_list[sw->dpid-SW_DPID_OFFSET].ctrl_no);
@@ -144,12 +156,13 @@ hello_port_add_cb(mul_switch_t *sw,  mul_port_t *port)
     if(port->port_no != 0xfffe && port->port_no < 1999)
     {
         c_log_debug("\t\nhello_port_add_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
-        tp_add_link(sw->dpid - SW_DPID_OFFSET, port->port_no, port->port_no-SW_DPID_OFFSET, sw->dpid, 0, sw_adj_list);  // 记录邻居
+        sw_adj_list[port->port_no - SW_DPID_OFFSET] = 1; // 记录邻居
         // 将此链路添加到数据库，设置为当前时间片以及确认的链路
+        while(is_connDB != 1) sleep(2);
         while(Add_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, slot_no, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_add_cb, Cant connect to db");
-            sleep(1);
+            sleep(2);
         }
         c_log_debug("hello_port_add_cb db_ip:%s", proxy_ip);
         c_log_debug("hello_port_add_cb end");
@@ -168,13 +181,14 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
     if(port->port_no != 0xfffe && port->port_no < 1999)
     {
         c_log_debug("hello_port_del_cb sw:0x%llx, port:%d",(unsigned long long)(sw->dpid-SW_DPID_OFFSET), port->port_no);
-        tp_delete_link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, sw_adj_list);// 删除记录邻居
+        sw_adj_list[port->port_no - SW_DPID_OFFSET] = 0;// 删除记录邻居
         sleep(2);   // 与可能需要连接数据库的时间错开
         // 将此链路从数据库中的当前时间片中删除
+        while(is_connDB != 1) sleep(2);
         while(Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, proxy_ip) == FAILURE)
         {
             c_log_debug("hello_port_del_cb, Cant connect to db");
-            sleep(1);
+            sleep(2);
         }
         c_log_debug("hello_port_del_cb db_ip:%s", proxy_ip);
         Del_Real_Topo(port->port_no-SW_DPID_OFFSET, sw->dpid - SW_DPID_OFFSET, proxy_ip);
@@ -205,18 +219,24 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 uint8_t *raw UNUSED,
                 size_t pkt_len UNUSED)
 {
+    // if(((fl->ip.nw_src >> 16) & 0x000000ff) == 68 || ((fl->ip.nw_dst >> 16) & 0x000000ff) == 68)return;
     c_log_info("\nhello app - packet-in from network src %x - dst %x", fl->ip.nw_src, fl->ip.nw_dst);
     tp_distory(sw_list);
+    c_log_debug("tp_distory end");
     // 更新拓扑
+    while(is_connDB != 1) sleep(2);
     while(Get_Real_Topo(proxy_ip, sw_list) == FAILURE)
     {
         c_log_debug("hello_packet_in, Cant connect to db");
-        sleep(1);
+        sleep(2);
     }
-    Set_Del_Link(slot_no, proxy_ip, sw_list);
     c_log_debug("Get_Real_Topo end");
+    Set_Del_Link(slot_no, proxy_ip, sw_list);
+    c_log_debug("Set_Del_Link end");
     // 计算路由
-    if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, sw_list)==FAILURE)
+    // 只为从源节点上传的packet-in包计算路由
+    // c_log_debug("((fl->ip.nw_src >> 24) & 0x000000ff) -1 = %d, ctrl_id = %d", ((fl->ip.nw_src >> 24) & 0x000000ff) -1, ctrl_id);
+    if(hello_route(fl->ip.nw_src, fl->ip.nw_dst, inport, sw_list)==FAILURE)
     {
         c_log_debug("hello_route %08x <--> %08x fail", (fl->ip.nw_src), (fl->ip.nw_dst));
     }
@@ -235,8 +255,10 @@ hello_core_closed(void)
     /* Nothing to do */
     close(skfd_slot);
     close(skfd_rt);
+    pthread_cancel(pid_ping);
     pthread_cancel(pid_slot);
 	pthread_join(pid_slot, NULL);
+    pthread_join(pid_ping, NULL);
     
     c_log_debug("hello_core_closed end");
 }
@@ -321,17 +343,26 @@ hello_module_init(void *base_arg)
         sw_list[ret].ctrl_no = -1;
         sw_list[ret].sw_dpid = ret;
     }
+    pthread_mutex_init(&mutex, NULL);
 
     if(load_conf() == SUCCESS)
         c_log_debug("Load config success！");
     else
         c_log_debug("Load config failed！");
 
+    ret = pthread_create(&pid_ping, NULL, connect_ping, NULL);
+    if (ret == -1) 
+        c_log_debug("connect_ping thread create failed!"); 
+    else
+        c_log_debug("connect_ping thread create success!");
+
     ret = pthread_create(&pid_slot, NULL, socket_listen, NULL);
     if (ret == -1) 
         c_log_debug("socket_listen thread create failed!"); 
     else
         c_log_debug("socket_listen thread create success!");
+    
+    
 
     /* Fire up a timer to do any housekeeping work for this application */
     hello_timer = evtimer_new(base, hello_timer_event, NULL); 
@@ -382,6 +413,17 @@ RET_RESULT load_conf(void)
     }
 
     fclose(fp);
+    
+    fp = fopen("tcpkeepalive", "r");
+
+    if(fp == NULL) return FAILURE;
+
+    if(fscanf(fp, "%d", &keepAlive)<1)return FAILURE;
+    if(fscanf(fp, "%d", &keepIdle)<1)return FAILURE;
+    if(fscanf(fp, "%d", &keepInterval)<1)return FAILURE;
+    if(fscanf(fp, "%d", &keepCount)<1)return FAILURE;
+
+    fclose(fp);
     return SUCCESS;
 }
 
@@ -410,13 +452,13 @@ RET_RESULT rt_set2sw(char* rec)
     switch (rec[i + 0] - '0')
     {
     case ROUTE_ADD:
-        if(tp_get_link_in_head(sw_adj_list[sw_dpid].list_link, outport) == NULL)    //下方的转发卫星交换机不在邻接，设置fail_link
+        if(sw_adj_list[outport] == 0)    //下方的转发卫星交换机不在邻接，设置fail_link
         {
             // c_log_debug("rt_set2sw s%ld dont find adj s%d", sw_dpid, outport);
             while(Del_Real_Topo(sw_dpid, outport, proxy_ip) == FAILURE)
             {
                 c_log_debug("rt_set2sw, Cant connect to db");
-                sleep(1);
+                sleep(2);
             }
             Del_Real_Topo(outport, sw_dpid, proxy_ip);
             // Set_Fail_Link(sw_dpid, outport, db_id, slot_no, proxy_ip);
@@ -470,7 +512,7 @@ RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip)
         {
             
             c_log_debug("Get_Wait_Exec, Cant connect to sw");
-            sleep(1);
+            sleep(2);
         }
         rt_set2sw(buf);
         
@@ -496,6 +538,8 @@ RET_RESULT rt_recv(void)
         c_log_debug("all_ret: %d, ret: %d", all_ret, ret);
         if(-1 == ret || 0 == ret) 
         {
+            close(skfd_rt);
+            c_log_debug("recv failed",__LINE__,errno);
             skfd_rt = -1;
             return FAILURE; // 切换数据库
         }
@@ -520,7 +564,7 @@ RET_RESULT rt_recv(void)
         while(!is_connSW)
         {
             c_log_debug("rt_recv, Cant connect to sw");
-            sleep(1);
+            sleep(2);
         }
         rt_set2sw(&rec[i]);
     }
@@ -531,18 +575,14 @@ RET_RESULT conn_db(int slot_no)
 {
     int i = 0, ret = 0;
     struct sockaddr_in addr;
-    int keepAlive = 1; // 开启keepalive属性
-    int keepIdle = 1; // 如该连接在1秒内没有任何数据往来,则进行探测 
-    int keepInterval = 1; // 探测时发包的时间间隔为1秒
-    int keepCount = 1; // 探测尝试的次数
 
-    skfd_rt = socket(AF_INET, SOCK_STREAM, 0);
-	if ( -1 == skfd_rt) {
-		c_log_debug("socket failed");
-        return FAILURE;
-	}
     addr.sin_family = AF_INET; //设置tcp协议族
     addr.sin_port = htons(PROXY_PORT); //设置端口号
+    skfd_rt = socket(AF_INET, SOCK_STREAM, 0);
+    if ( -1 == skfd_rt) {
+        c_log_debug("socket failed");
+        return FAILURE;
+    }
 	
     for(i = 0; i<DB_NUM; i++)
     {
@@ -563,9 +603,10 @@ RET_RESULT conn_db(int slot_no)
             setsockopt(skfd_rt, SOL_TCP, TCP_KEEPIDLE, (void*)&keepIdle, sizeof(keepIdle));
             setsockopt(skfd_rt, SOL_TCP, TCP_KEEPINTVL, (void *)&keepInterval, sizeof(keepInterval));
             setsockopt(skfd_rt, SOL_TCP, TCP_KEEPCNT, (void *)&keepCount, sizeof(keepCount));
-            Get_Wait_Exec(ctrl_id, proxy_ip);
+            // Get_Wait_Exec(ctrl_id, proxy_ip);
             Set_Ctrl_Conn_Db(ctrl_id, db_id, proxy_ip);
             Get_Wait_Exec(ctrl_id, proxy_ip);
+            c_log_debug("slot_%d connect db%d success end", slot_no, ctrl2db[slot_no][i]);
             return SUCCESS;
         }
     }
@@ -607,61 +648,77 @@ void* socket_listen(void *arg UNUSED)
             close(skfd_slot);
             c_log_debug("fail to select, error\n");
             return NULL;
-        } else {
+        } 
+        else if(ret != 0)
+        {
             if(FD_ISSET(skfd_slot, &fds))   // 得知时间片
             {
                 bzero(buf, 30);
                 recvfrom(skfd_slot, buf, BUFSIZE, 0, NULL, NULL);
                 c_log_debug("recv slot: %s", buf);
                 slot_no = atoi(buf);
-                if(skfd_rt == -1 || db_id != ctrl2db[slot_no][0])   // 没有连接过数据库，或者需要连接到更加近的数据库
+                if(start_sign == 0)
                 {
-                    //db连接断开
                     is_connDB = 0;
-                    c_log_debug("skfd_rt=%d, db_id=%d, ctrl2db=%d", skfd_rt, db_id, ctrl2db[slot_no][0]);
-                    if(skfd_rt != -1)
-                    {
-                        close(skfd_rt);
-                    }
-                    if(conn_db(slot_no) == FAILURE)
-                    {
-                        //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
-                        c_log_debug("孤岛，%s", buf);
-                        while(system(buf) == -1) //执行失败
+                    c_log_debug("socket_listen skfd_slot conn db");
+                    if(pthread_mutex_trylock(&mutex)==0){
+                        if(conn_db(slot_no) == FAILURE)
                         {
-                            c_log_debug("孤岛，设置stp失败");
-                            sleep(1);
+                            //连接所有的数据库失败
+                            sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                            c_log_debug("孤岛，%s", buf);
+                            while(system(buf) == -1) //执行失败
+                            {
+                                c_log_debug("孤岛，设置stp失败");
+                                sleep(2);
+                            }
+                            return NULL;
                         }
-                        return NULL;
+                        pthread_mutex_unlock(&mutex);
                     }
+                    start_sign=1;
                 }
+                c_log_debug("write_sw_times slot_no = %d", slot_no);
+                if(slot_no == SLOT_NUM - 1)
+                {
+                    write_sw_times(ctrl_id, sw_closer_db_times, sw_disconnected_db_times);
+                    sw_closer_db_times = 0;
+                    sw_disconnected_db_times = 0;
+                }
+                goto variable_recovery; 
             }
             if(skfd_rt != -1 && FD_ISSET(skfd_rt, &fds))    // 路由分发，或者与数据库的连接断开了
             {
                 if(rt_recv() == FAILURE)
                 {
-                    //db连接断开
-                    is_connDB = 0;
-                    if(skfd_rt != -1)
-                    {
-                        close(skfd_rt);
-                    }
-                    if(conn_db(slot_no) == FAILURE)   
-                    {
-                        //连接所有的数据库失败
-                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
-                        c_log_debug("孤岛，%s", buf);
-                        while(system(buf) == -1) //执行失败
+                    if(pthread_mutex_trylock(&mutex)==0){
+                        is_connDB = 0;
+                        sw_disconnected_db_times += 1;
+                        //db连接断开
+                        if(skfd_rt != -1)
                         {
-                            c_log_debug("孤岛，设置stp失败");
-                            sleep(1);
+                            close(skfd_rt);
                         }
-                        return NULL;
+                        c_log_debug("socket_listen skfd_rt conn db");
+                        if(conn_db(slot_no) == FAILURE)   
+                        {
+                            //连接所有的数据库失败
+                            sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                            c_log_debug("孤岛，%s", buf);
+                            while(system(buf) == -1) //执行失败
+                            {
+                                c_log_debug("孤岛，设置stp失败");
+                                sleep(2);
+                            }
+                            return NULL;
+                        }
+                        pthread_mutex_unlock(&mutex);
                     }
                 }
             }
         }
+variable_recovery:
+        c_log_debug("variable_recovery and FDSET");
         FD_ZERO(&fds);
         FD_SET(skfd_slot, &fds);
         if(skfd_rt != -1) 
@@ -671,14 +728,14 @@ void* socket_listen(void *arg UNUSED)
     return NULL;
 }
 
-RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
+RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, uint32_t inport, tp_sw sw_list[SW_NUM])
 {
-    // uint64_t sw_src = ((nw_src >> 24)& 0x000000ff) -1;
-    uint64_t sw_src = ctrl_id;
+    uint64_t sw_src = ((nw_src >> 24)& 0x000000ff) -1;
+    // uint64_t sw_src = ctrl_id;
     uint64_t sw_dst = ((nw_dst >> 24)& 0x000000ff) -1;
     tp_link * tmp = NULL;  // 迭代的中间变量
     int i = 0, j = 0,  k = 0;
-    int sw_min = ctrl_id;  // 当前迭代的最小的sw
+    int sw_min = sw_src;  // 当前迭代的最小的sw
     int sw_min_weight = 0x0fffffff;  // 当前迭代的最小的sw的权重
     // uint32_t outport = 0;  
     int D[SW_NUM][3];    // 第一列为权重，第二列为是否已经确定路径(-1为未确定，1为确定)，第三列为前序节点
@@ -730,12 +787,12 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
             sprintf(rt_tmp, "%03d%03d ", D[sw_min][2], sw_min);
             sprintf(&rt_back[k], "%03d%03d ", sw_min, D[sw_min][2]);
             k+=7;
-            c_log_debug("sw_min:%d\n",sw_min);
+            // c_log_debug("sw_min:%d\n",sw_min);
             for(j=0;j<7;j++)rt[i+j]=rt_tmp[j];
             sw_min = D[sw_min][2];
             while(sw_min != sw_src)
             {
-                c_log_debug("sw_min:%d\n",sw_min);
+                // c_log_debug("sw_min:%d\n",sw_min);
                 i-=7;
                 sprintf(rt_tmp, "%03d%03d ", D[sw_min][2], sw_min);
                 sprintf(&rt_back[k], "%03d%03d ", sw_min, D[sw_min][2]);
@@ -743,14 +800,20 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, tp_sw sw_list[SW_NUM])
                 for(j=0;j<7;j++)rt[i+j]=rt_tmp[j];
                 sw_min = D[sw_min][2];
             }
-            c_log_debug("sw_min:%d\n",sw_min);
+            // c_log_debug("sw_min:%d\n",sw_min);
             Set_Cal_Route(c_nw_src, c_nw_dst, &rt[i], proxy_ip);
             c_log_debug("rt %s to %s: %s", c_nw_src, c_nw_dst, &rt[i]);
+            // if(inport != 65534)
+            // {
+            //     sprintf(&rt_back[k], "%03d%03d ", ctrl_id, inport-SW_DPID_OFFSET);
+            //     k+=7;
+            // }
             Set_Cal_Route(c_nw_dst, c_nw_src, rt_back, proxy_ip);
             c_log_debug("rt %s to %s: %s", c_nw_dst, c_nw_src, rt_back);
             return SUCCESS;
         }
         if(D[sw_min][1] != -1)return FAILURE;   // 找不到路径
+        // c_log_debug("确定点，sw_min:%d", sw_min);
         D[sw_min][1] = 1;   //确认
         // 更新权重
         tmp = sw_list[sw_min].list_link;
@@ -804,6 +867,73 @@ RET_RESULT Set_Del_Link(int slot_no, char* redis_ip, tp_sw sw_list[SW_NUM])
     freeReplyObject(reply);
     redisFree(context);
     return SUCCESS;
+}
+
+void * connect_ping(void *arg UNUSED)
+{
+    char command[512] = {'\0'};
+
+    while(1){
+        while(start_sign == 0)sleep(2);
+        if(is_connDB == 0)
+        {
+            sleep(2);
+            continue;
+        }
+        sprintf(command, "ping -c 3 %s > /dev/null", proxy_ip);
+        if(system(command) != 0)
+        {
+            // sleep(2);
+            // sprintf(command, "ping -c 3 %s > /dev/null", proxy_ip);
+            // if(system(command) == 0)continue;
+            c_log_debug("connect_ping pthread_mutex_trylock");
+            if(pthread_mutex_trylock(&mutex)==0)
+            {
+                is_connDB = 0;
+                c_log_debug("connect_ping conn db");
+                sw_disconnected_db_times += 1;
+                //db连接断开
+                if(skfd_rt != -1)
+                {
+                    close(skfd_rt);
+                }
+                if(conn_db(slot_no) == FAILURE)   
+                {
+                    //连接所有的数据库失败
+                    sprintf(command, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                    c_log_debug("孤岛，%s", command);
+                    while(system(command) == -1) //执行失败
+                    {
+                        c_log_debug("孤岛，设置stp失败");
+                        sleep(2);
+                    }
+                    return NULL;
+                }
+                pthread_mutex_unlock(&mutex);
+            }
+        }
+        sleep(2);
+        memset(command, 0, 30);
+    }
+    
+    return NULL;
+}
+
+void write_sw_times(int ctrl_id, int sw_closer_db_times, int sw_disconnected_db_times)
+{
+    FILE *fp = NULL;
+    char filename[10] = {'\0'};
+
+    sprintf(filename, "ctrl_%d_sw_times", ctrl_id+1);
+
+    fp = fopen(filename, "w+");
+
+    if(fp == NULL) return;
+
+    fprintf(fp, "sw_closer_db_times:%d\n", sw_closer_db_times);
+    fprintf(fp, "sw_disconnected_db_times:%d\n", sw_disconnected_db_times);
+
+    fclose(fp);
 }
 
 module_init(hello_module_init);
