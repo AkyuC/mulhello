@@ -191,7 +191,7 @@ hello_port_del_cb(mul_switch_t *sw,  mul_port_t *port)
             sleep(2);
         }
         c_log_debug("hello_port_del_cb db_ip:%s", proxy_ip);
-        Del_Real_Topo(port->port_no-SW_DPID_OFFSET, sw->dpid - SW_DPID_OFFSET, proxy_ip);
+        Del_Real_Topo(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, proxy_ip);
         Set_Fail_Link(sw->dpid - SW_DPID_OFFSET, port->port_no-SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
         // Set_Fail_Link(port->port_no-SW_DPID_OFFSET, sw->dpid - SW_DPID_OFFSET, db_id, slot_no, proxy_ip);
         c_log_debug("hello_port_del_cb end");
@@ -219,8 +219,8 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 uint8_t *raw UNUSED,
                 size_t pkt_len UNUSED)
 {
-    // if(((fl->ip.nw_src >> 16) & 0x000000ff) == 68 || ((fl->ip.nw_dst >> 16) & 0x000000ff) == 68)return;
-    c_log_info("\nhello app - packet-in from network src %x - dst %x", fl->ip.nw_src, fl->ip.nw_dst);
+    if(((fl->ip.nw_src >> 16) & 0x000000ff) == 68 || ((fl->ip.nw_dst >> 16) & 0x000000ff) == 68 || fl->ip.nw_src == 0 || fl->ip.nw_dst == 0)return;
+    c_log_info("\nhello app - packet-in from network src %x - dst %x，ntohs(fl->dl_type)： %x", fl->ip.nw_src, fl->ip.nw_dst, ntohs(fl->dl_type));
     tp_distory(sw_list);
     c_log_debug("tp_distory end");
     // 更新拓扑
@@ -350,11 +350,11 @@ hello_module_init(void *base_arg)
     else
         c_log_debug("Load config failed！");
 
-    ret = pthread_create(&pid_ping, NULL, connect_ping, NULL);
-    if (ret == -1) 
-        c_log_debug("connect_ping thread create failed!"); 
-    else
-        c_log_debug("connect_ping thread create success!");
+    // ret = pthread_create(&pid_ping, NULL, connect_ping, NULL);
+    // if (ret == -1) 
+    //     c_log_debug("connect_ping thread create failed!"); 
+    // else
+    //     c_log_debug("connect_ping thread create success!");
 
     ret = pthread_create(&pid_slot, NULL, socket_listen, NULL);
     if (ret == -1) 
@@ -463,7 +463,13 @@ RET_RESULT rt_set2sw(char* rec)
             Del_Real_Topo(outport, sw_dpid, proxy_ip);
             // Set_Fail_Link(sw_dpid, outport, db_id, slot_no, proxy_ip);
             // Set_Fail_Link(outport, sw_dpid, db_id, slot_no, proxy_ip);
+            c_log_debug("安全检查，sw_dpid: %lu, outport: %d", sw_dpid, outport);
             break;
+        }
+        if(timeout != 999)
+        {
+            if(((nw_src >> 24)& 0x000000ff) -1 != ctrl_id)return hello_add_flow_transport_d2d_inport(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, timeout+SW_DPID_OFFSET, 0, PRO_NORMAL);
+            return hello_add_flow_transport_d2d(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, timeout+SW_DPID_OFFSET, 0, PRO_NORMAL);
         }
         return hello_add_flow_transport(sw_dpid+SW_DPID_OFFSET, nw_src, nw_dst, (uint32_t)-1, outport+SW_DPID_OFFSET, 0, PRO_NORMAL);
         break;
@@ -506,8 +512,15 @@ RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip)
     for(i = 0; i < reply->elements; i++)
     {
         buf = reply->element[i]->str;
+        // 流表成功下发后，从集合中删除相应元素
+        if(Del_Wait_Exec(ctrl, buf, redis_ip) == FAILURE)
+        {
+            c_log_debug("Del_Wait_Exec %s fail", buf);
+        }else
+        {
+            c_log_debug("Del_Wait_Exec %s success", buf);
+        }
         // 根据buf进行数据处理，流表下发
-
         while(!is_connSW)
         {
             
@@ -515,9 +528,6 @@ RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip)
             sleep(2);
         }
         rt_set2sw(buf);
-        
-        // 流表成功下发后，从集合中删除相应元素
-        Del_Wait_Exec(ctrl, buf, redis_ip);
     }
 
     freeReplyObject(reply);
@@ -527,27 +537,16 @@ RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip)
 
 RET_RESULT rt_recv(void)
 {
-    int ret = 0, i = 0, all_ret=0;
+    int ret = 0, i = 0;
     char rec[BUFSIZE] = {0};
 
 	//客户端接收来自服务端的消息
-    memset(rec, 0, BUFSIZE);
-    while(all_ret != BUFSIZE)
-    {
-        ret = recv(skfd_rt, &rec[all_ret], BUFSIZE - all_ret, 0);
-        c_log_debug("all_ret: %d, ret: %d", all_ret, ret);
-        if(-1 == ret || 0 == ret) 
-        {
-            close(skfd_rt);
-            c_log_debug("recv failed",__LINE__,errno);
-            skfd_rt = -1;
-            return FAILURE; // 切换数据库
-        }
-        all_ret += ret;
-    }
-
+    ret = recv(skfd_rt, rec, BUFSIZE , 0);
+    c_log_debug("ret: %d", ret);
     if(-1 == ret || 0 == ret) 
     {
+        close(skfd_rt);
+        c_log_debug("recv failed");
         skfd_rt = -1;
         return FAILURE; // 切换数据库
     }else if(ret > 0) 
@@ -558,6 +557,9 @@ RET_RESULT rt_recv(void)
         }
 
         c_log_debug("recv a route: %s, len:%d\n", &rec[i], ret); // TCP 粘包
+        if(i == ret) return SUCCESS;
+
+        // if(strlen(&rec[i]) < 26)
 
         // type:1,sw:3,ip_src:8,ip_dst:8,outport:3,timeout:3
         // %d%03d%s%s%03d%03d
@@ -595,9 +597,8 @@ RET_RESULT conn_db(int slot_no)
         c_log_debug("slot_%d try to connect db, db_id=%d, ctrl2db=%d, proxy_ip:%s, ret:%d", slot_no, db_id, ctrl2db[slot_no][i], proxy_ip, ret);
         if(-1 != ret) 
         {
-            c_log_debug("slot_%d connect db%d success", slot_no, ctrl2db[slot_no][i]);
+            c_log_debug("keepalive: %d, %d, %d, %d", keepAlive, keepIdle, keepInterval, keepCount);
             db_id = ctrl2db[slot_no][i];
-            is_connDB = 1;
             // ioctl(skfd_rt, FIONBIO, 1);
             setsockopt(skfd_rt, SOL_SOCKET, SO_KEEPALIVE, (void *)&keepAlive, sizeof(keepAlive));
             setsockopt(skfd_rt, SOL_TCP, TCP_KEEPIDLE, (void*)&keepIdle, sizeof(keepIdle));
@@ -606,7 +607,8 @@ RET_RESULT conn_db(int slot_no)
             // Get_Wait_Exec(ctrl_id, proxy_ip);
             Set_Ctrl_Conn_Db(ctrl_id, db_id, proxy_ip);
             Get_Wait_Exec(ctrl_id, proxy_ip);
-            c_log_debug("slot_%d connect db%d success end", slot_no, ctrl2db[slot_no][i]);
+            is_connDB = 1;
+            c_log_debug("slot_%d connect db%d success end, skfd_rt:%d", slot_no, ctrl2db[slot_no][i], skfd_rt);
             return SUCCESS;
         }
     }
@@ -801,14 +803,14 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, uint32_t inport, tp_sw 
                 sw_min = D[sw_min][2];
             }
             // c_log_debug("sw_min:%d\n",sw_min);
-            Set_Cal_Route(c_nw_src, c_nw_dst, &rt[i], proxy_ip);
+            Set_Cal_Route(c_nw_src, c_nw_dst, 1, &rt[i], proxy_ip);
             c_log_debug("rt %s to %s: %s", c_nw_src, c_nw_dst, &rt[i]);
             // if(inport != 65534)
             // {
             //     sprintf(&rt_back[k], "%03d%03d ", ctrl_id, inport-SW_DPID_OFFSET);
             //     k+=7;
             // }
-            Set_Cal_Route(c_nw_dst, c_nw_src, rt_back, proxy_ip);
+            Set_Cal_Route(c_nw_dst, c_nw_src, 1, rt_back, proxy_ip);
             c_log_debug("rt %s to %s: %s", c_nw_dst, c_nw_src, rt_back);
             return SUCCESS;
         }
@@ -874,13 +876,13 @@ void * connect_ping(void *arg UNUSED)
     char command[512] = {'\0'};
 
     while(1){
-        while(start_sign == 0)sleep(2);
+        while(start_sign == 0)sleep(3);
         if(is_connDB == 0)
         {
-            sleep(2);
+            sleep(3);
             continue;
         }
-        sprintf(command, "ping -c 3 %s > /dev/null", proxy_ip);
+        sprintf(command, "ping -c 3 -W 5000 %s > /dev/null", proxy_ip);
         if(system(command) != 0)
         {
             // sleep(2);
@@ -912,7 +914,7 @@ void * connect_ping(void *arg UNUSED)
                 pthread_mutex_unlock(&mutex);
             }
         }
-        sleep(2);
+        sleep(5);
         memset(command, 0, 30);
     }
     

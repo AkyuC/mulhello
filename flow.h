@@ -50,6 +50,40 @@ RET_RESULT hello_add_flow_transport(uint64_t sw_dpid, uint32_t nw_src, uint32_t 
                                     uint32_t outport, uint16_t htimeo, uint16_t prio);
 
 /** 
+ * @name hello_add_flow_transport_d2d
+ * @brief 下发d2d流表
+ * @param [in] sw_dpid Switch dipd
+ * @param [in] nw_src 源地址
+ * @param [in] nw_dst 目的地址
+ * @param [in] buffer_id Buffer-id associated with this flow (as per OF spec)
+ * @param [in] outport1 转发端口
+ * @param [in] outport2 转发端口
+ * @param [in] htimeo Hard timeout (as per OF Spec) 
+ * @param [in] prio Flow priority 
+ *
+ * @retval success or failure  
+ */
+RET_RESULT hello_add_flow_transport_d2d(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst, uint32_t buffer_id,
+                                    uint32_t outport1, uint32_t outport2, uint16_t htimeo, uint16_t prio);
+
+/** 
+ * @name hello_add_flow_transport_d2d_inport
+ * @brief 下发d2d流表，包含入端口匹配
+ * @param [in] sw_dpid Switch dipd
+ * @param [in] nw_src 源地址
+ * @param [in] nw_dst 目的地址
+ * @param [in] buffer_id Buffer-id associated with this flow (as per OF spec)
+ * @param [in] inport 入端口
+ * @param [in] outport1 转发端口
+ * @param [in] htimeo Hard timeout (as per OF Spec) 
+ * @param [in] prio Flow priority 
+ *
+ * @retval success or failure  
+ */
+RET_RESULT hello_add_flow_transport_d2d_inport(uint64_t sw_dpid, uint32_t nw_src, uint32_t nw_dst, uint32_t buffer_id,
+                                    uint32_t outport1, uint32_t inport, uint16_t htimeo, uint16_t prio);
+
+/** 
  * @name hello_del_flow
  * @brief 删除流表
  * @param [in] sw_dpid Switch dipd

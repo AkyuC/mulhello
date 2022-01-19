@@ -38,6 +38,7 @@
 "sadd wait_exec_%02d %s", ctrl, buf
 20、控制器连接到新的数据库，控制器读取wait_exec列表内容或者数据库通过订阅监听并成功下发通告之后，删除相应的wait_exec元素
 "srem wait_exec_%02d %s", ctrl, buf
+注意：采用set数据结构，可能存在通告处理失序问题（可以修改为list数据结构，不必判断是否存在重复写入）
     
 ***************************************************************/
 
@@ -87,7 +88,7 @@ RET_RESULT Add_Real_Topo(uint32_t sw1, uint32_t sw2, int slot, char* redis_ip);
 RET_RESULT Del_Real_Topo(uint32_t sw1, uint32_t sw2, char* redis_ip);
 // write default routes(s2s/d2d/c2s/c2d)
 RET_RESULT Set_Dfl_Route(char *ip_src, char *ip_dst, char *out_sw_port, int slot, char* redis_ip);
-RET_RESULT Set_Cal_Route(char *ip_src, char *ip_dst, char *out_sw_port, char* redis_ip);
+RET_RESULT Set_Cal_Route(char *ip_src, char *ip_dst, int num, char *out_sw_port, char* redis_ip);
 // RET_RESULT Set_Cal_Fail_Route(char *ip_src, char *ip_dst, char* redis_ip);
 // write links that next slot will be deleted
 // RET_RESULT Set_Del_Link(uint32_t sw1, uint32_t sw2, int slot, char* redis_ip);
@@ -95,8 +96,8 @@ RET_RESULT Set_Cal_Route(char *ip_src, char *ip_dst, char *out_sw_port, char* re
 //注意：何时清空失效链路列表？下一个时间片
 RET_RESULT Set_Fail_Link(uint32_t sw1, uint32_t sw2, int db_id, int slot, char* redis_ip); 
 // write link <-> routes set
-RET_RESULT Add_Rt_Set(uint32_t sw1, uint32_t sw2, char *ip_src, char *ip_dst, char* redis_ip);
-RET_RESULT Del_Rt_Set(int slot, char *ip_src, char *ip_dst, char* redis_ip);
+RET_RESULT Add_Rt_Set(uint32_t sw1, uint32_t sw2, char *ip_src, char *ip_dst, int num, char* redis_ip);
+RET_RESULT Del_Rt_Set(int slot, char *ip_src, char *ip_dst, int num, char* redis_ip);
 // RET_RESULT Add_Rt_Set_Time(uint32_t sw1, uint32_t sw2, int slot, char *ip_src, char *ip_dst, char* redis_ip);
 // RET_RESULT Mov_Rt_Set(uint32_t sw1, uint32_t sw2, int slot, char *ip_src, char *ip_dst, char* redis_ip);
 // write fail_link(dfl_set - real_set)
