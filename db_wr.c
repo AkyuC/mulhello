@@ -12,9 +12,12 @@
 
 RET_RESULT redis_connect(redisContext **context, char* redis_ip)
 {
+    struct timeval tv;
+    tv.tv_sec = 5;
+
     if(*context)
         redisFree(*context);
-	*context = redisConnect(redis_ip, REDIS_SERVER_PORT_W);
+	*context = redisConnectWithTimeout(redis_ip, REDIS_SERVER_PORT_W, tv);
     
     if((*context)->err)
     {
@@ -225,6 +228,9 @@ RET_RESULT Add_Real_Topo(uint32_t sw1, uint32_t sw2, int slot, char* redis_ip)
     char cmd[CMD_MAX_LENGHT] = {0};
     uint64_t sw = (((uint64_t)sw1) << 32) + sw2;
     uint64_t delay = Get_Link_Delay(sw1, sw2, slot, redis_ip);
+    // 如果没有查询到新增链路时延，初始化为常数
+    if(delay == -1) delay = 1300;
+    
     /*组装redis命令*/
     snprintf(cmd, CMD_MAX_LENGHT, "hset real_topo %lu %lu", sw, delay);
 
@@ -406,12 +412,14 @@ RET_RESULT Del_Rt_Set(int slot, char *ip_src, char *ip_dst, int num, char* redis
     redisReply *reply=NULL;
     uint32_t sw1, sw2;
     int i = 0;
+    struct timeval tv;
+    tv.tv_sec = 5;
 
     /*组装Redis命令*/
     snprintf(cmd, CMD_MAX_LENGHT, "lrange calrt_%s%s_%d 0 -1", ip_src, ip_dst, num);
 
     /*连接redis*/
-    context = redisConnect(redis_ip, REDIS_SERVER_PORT_R);
+    context = redisConnectWithTimeout(redis_ip, REDIS_SERVER_PORT_R, tv);
     if (context->err)
     {
         printf("\tError: %s\n", context->errstr);

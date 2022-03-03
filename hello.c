@@ -52,15 +52,12 @@ char proxy_ip[20] = "192.168.68.";  // 数据库代理ip
 int db_id = -1;     // 连接的数据库id
 int slot_no = 0;    // 时间片
 int ctrl2db[SLOT_NUM][DB_NUM];    // 每个时间片该控制器连接所有数据库的远近顺序
-int start_sign = 0;
 
 int skfd_rt = -1;  // 和服务器的通信套接字
 pthread_t pid_slot; // 接收时间片切换信号的线程
-pthread_t pid_ping; // ping测试连通的线程
 int skfd_slot = -1; // 获取时间片切换信息的套接字
 int is_connDB = 0;  // 全局判断是否已经连接上数据库
 int is_connSW = 0;  // 全局判断是否已经连接上卫星交换机
-pthread_mutex_t mutex;  // ping和keepalive的互斥锁
 int keepAlive = 1; // 开启keepalive属性
 int keepIdle = 1; // 如该连接在1秒内没有任何数据往来,则进行探测 
 int keepInterval = 1; // 探测时发包的时间间隔为1秒
@@ -77,10 +74,10 @@ int rt_recv(void);  // 路由接收函数，成功返回SUCCESS，失败返回FA
 RET_RESULT Get_Wait_Exec(uint32_t ctrl, char* redis_ip); // 查看数据库当中是否需要进行流表操作
 RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, uint32_t inport, tp_sw sw_list[SW_NUM]);    // 路由
 RET_RESULT Set_Del_Link(int slot_no, char* redis_ip, tp_sw sw_list[SW_NUM]);
-int sw_closer_db_times = 0;
 int sw_disconnected_db_times = 0;
-void write_sw_times(int ctrl_id, int sw_closer_db_times, int sw_disconnected_db_times); // 统计切换次数
-void * connect_ping(void *arg UNUSED);
+void write_sw_times(int ctrl_id, int sw_disconnected_db_times); // 统计切换次数
+int msg_send(unsigned int server_addr, char *msg, unsigned int len);
+
 
 /**
  * hello_install_dfl_flows -
@@ -220,6 +217,7 @@ hello_packet_in(mul_switch_t *sw UNUSED,
                 size_t pkt_len UNUSED)
 {
     if(((fl->ip.nw_src >> 16) & 0x000000ff) == 68 || ((fl->ip.nw_dst >> 16) & 0x000000ff) == 68 || fl->ip.nw_src == 0 || fl->ip.nw_dst == 0)return;
+    if(((fl->ip.nw_src >> 24) & 0x000000ff) != ctrl_id + 1)return;
     c_log_info("\nhello app - packet-in from network src %x - dst %x，ntohs(fl->dl_type)： %x", fl->ip.nw_src, fl->ip.nw_dst, ntohs(fl->dl_type));
     tp_distory(sw_list);
     c_log_debug("tp_distory end");
@@ -255,10 +253,8 @@ hello_core_closed(void)
     /* Nothing to do */
     close(skfd_slot);
     close(skfd_rt);
-    pthread_cancel(pid_ping);
     pthread_cancel(pid_slot);
 	pthread_join(pid_slot, NULL);
-    pthread_join(pid_ping, NULL);
     
     c_log_debug("hello_core_closed end");
 }
@@ -336,6 +332,7 @@ hello_module_init(void *base_arg)
     struct event_base *base = base_arg;
     struct timeval tv = { 1, 0 };
     int ret;
+    char buf[128] = "/usr/src/openmul/application/hello/mul_ping &" ;
 
     c_log_debug("hello_module_init %s", FN);
     for(ret=0; ret<SW_NUM; ret++)
@@ -343,18 +340,16 @@ hello_module_init(void *base_arg)
         sw_list[ret].ctrl_no = -1;
         sw_list[ret].sw_dpid = ret;
     }
-    pthread_mutex_init(&mutex, NULL);
 
     if(load_conf() == SUCCESS)
-        c_log_debug("Load config success！");
+        c_log_debug("Load config success!");
     else
-        c_log_debug("Load config failed！");
-
-    // ret = pthread_create(&pid_ping, NULL, connect_ping, NULL);
-    // if (ret == -1) 
-    //     c_log_debug("connect_ping thread create failed!"); 
-    // else
-    //     c_log_debug("connect_ping thread create success!");
+        c_log_debug("Load config failed!");
+    
+    if(system(buf) == 0)
+        c_log_debug("mul_ping success!");
+    else
+        c_log_debug("mul_ping fail!");
 
     ret = pthread_create(&pid_slot, NULL, socket_listen, NULL);
     if (ret == -1) 
@@ -616,14 +611,46 @@ RET_RESULT conn_db(int slot_no)
     return FAILURE;
 }
 
+int msg_send(unsigned int server_addr, char *msg, unsigned int len)
+{
+    int client_fd, ret;
+    struct sockaddr_in ser_addr;
+    
+    c_log_debug("msg_send server-addr: %d, msg: %s, len: %d", server_addr, msg, len);
+
+    client_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(client_fd < 0)
+    {
+        c_log_debug("create socket fail!\n");
+        return 0;
+    }
+
+    memset(&ser_addr, 0, sizeof(ser_addr));
+    ser_addr.sin_family = AF_INET;
+    //ser_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    ser_addr.sin_addr.s_addr = server_addr;  //注意网络序转换
+    ser_addr.sin_port = htons(PING_PORT);  //注意网络序转换
+
+    // char buf[UDP_BUFF_LEN] = "TEST UDP MSG!\n";
+    ret = sendto(client_fd, msg, len, 0, (struct sockaddr*)&ser_addr, sizeof(ser_addr));
+    if(ret <=0)c_log_debug("msg_send fail");
+
+    close(client_fd);
+    return ret;
+}
+
+
+
 void* socket_listen(void *arg UNUSED)
 {
-    struct sockaddr_in srvaddr;
+    struct sockaddr_in srvaddr, pingaddr;
+    struct sockaddr_in clent_addr;
 	socklen_t len = sizeof(srvaddr);
     char buf[BUFSIZE] = {'\0'};
-    int ret, maxfd;
+    int ret, maxfd, start_sign = 0, ping_fd = 0, tmp;
     fd_set fds;
 
+    // 时间片的socket初始化
     FD_ZERO(&fds);
 	bzero(&srvaddr, len);
     skfd_slot = socket(AF_INET, SOCK_DGRAM, 0);
@@ -631,15 +658,29 @@ void* socket_listen(void *arg UNUSED)
 	srvaddr.sin_family = AF_INET;
 	srvaddr.sin_port = htons(SLOT_LiSTEN_PORT);
 	srvaddr.sin_addr.s_addr = inet_addr(local_ip);
-
 	// 绑定本地IP和端口，监听时间片序号的
 	if(bind(skfd_slot, &srvaddr, len) == -1)
     {
         c_log_debug("skfd_slot bind fail， local_ip: %s, port: %d", local_ip, SLOT_LiSTEN_PORT);
         return NULL;
     }
+
+    // ping的socket初始化
+    bzero(&pingaddr, len);
+    ping_fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+	pingaddr.sin_family = AF_INET;
+	pingaddr.sin_port = htons(PING_MUL_PORT);
+	pingaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    // 绑定本地IP和端口，监听时间片序号的
+	if(bind(ping_fd, &pingaddr, len) == -1)
+    {
+        c_log_debug("ping_fd bind fail， local_ip: 127.0.0.1, port: %d", PING_MUL_PORT);
+        return NULL;
+    }
     FD_SET(skfd_slot, &fds);
-    maxfd = skfd_slot;
+    FD_SET(ping_fd, &fds);
+    maxfd = skfd_slot > ping_fd ? skfd_slot : ping_fd;
 
 	while(1)
 	{
@@ -663,37 +704,67 @@ void* socket_listen(void *arg UNUSED)
                 {
                     is_connDB = 0;
                     c_log_debug("socket_listen skfd_slot conn db");
-                    if(pthread_mutex_trylock(&mutex)==0){
-                        if(conn_db(slot_no) == FAILURE)
+                    if(conn_db(slot_no) == FAILURE)
+                    {
+                        //连接所有的数据库失败
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                        c_log_debug("孤岛，%s", buf);
+                        while(system(buf) == -1) //执行失败
                         {
-                            //连接所有的数据库失败
-                            sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
-                            c_log_debug("孤岛，%s", buf);
-                            while(system(buf) == -1) //执行失败
-                            {
-                                c_log_debug("孤岛，设置stp失败");
-                                sleep(2);
-                            }
-                            return NULL;
+                            c_log_debug("孤岛，设置stp失败");
+                            sleep(2);
                         }
-                        pthread_mutex_unlock(&mutex);
+                        return NULL;
                     }
+                    // 告诉ping程序开始ping db
+                    sprintf(buf, "%d", db_id);
+                    msg_send(inet_addr("127.0.0.1"), buf, strlen(buf));
                     start_sign=1;
                 }
                 c_log_debug("write_sw_times slot_no = %d", slot_no);
                 if(slot_no == SLOT_NUM - 1)
                 {
-                    write_sw_times(ctrl_id, sw_closer_db_times, sw_disconnected_db_times);
-                    sw_closer_db_times = 0;
+                    write_sw_times(ctrl_id, sw_disconnected_db_times);
                     sw_disconnected_db_times = 0;
                 }
-                goto variable_recovery; 
             }
             if(skfd_rt != -1 && FD_ISSET(skfd_rt, &fds))    // 路由分发，或者与数据库的连接断开了
             {
                 if(rt_recv() == FAILURE)
                 {
-                    if(pthread_mutex_trylock(&mutex)==0){
+                    is_connDB = 0;
+                    sw_disconnected_db_times += 1;
+                    //db连接断开
+                    if(skfd_rt != -1)
+                    {
+                        close(skfd_rt);
+                    }
+                    c_log_debug("socket_listen skfd_rt conn db");
+                    if(conn_db(slot_no) == FAILURE)   
+                    {
+                        //连接所有的数据库失败
+                        sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall ping_mul;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                        c_log_debug("孤岛，%s", buf);
+                        while(system(buf) == -1) //执行失败
+                        {
+                            c_log_debug("孤岛，设置stp失败");
+                            sleep(2);
+                        }
+                        return NULL;
+                    }
+                    // 告诉ping程序开始ping db
+                    sprintf(buf, "%d", db_id);
+                    msg_send(inet_addr("127.0.0.1"), buf, strlen(buf));
+                }
+            }
+            if(FD_ISSET(ping_fd, &fds))   // ping程序ping db不通
+            {
+                ret = recvfrom(ping_fd, buf, BUFSIZE, 0, (struct sockaddr*)&clent_addr, &len);
+                if(ret > 0)
+                {
+                    tmp = atoi(buf);
+                    if(tmp == db_id)
+                    {
                         is_connDB = 0;
                         sw_disconnected_db_times += 1;
                         //db连接断开
@@ -705,7 +776,7 @@ void* socket_listen(void *arg UNUSED)
                         if(conn_db(slot_no) == FAILURE)   
                         {
                             //连接所有的数据库失败
-                            sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
+                            sprintf(buf, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall ping_mul;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
                             c_log_debug("孤岛，%s", buf);
                             while(system(buf) == -1) //执行失败
                             {
@@ -714,18 +785,20 @@ void* socket_listen(void *arg UNUSED)
                             }
                             return NULL;
                         }
-                        pthread_mutex_unlock(&mutex);
                     }
+                    // 告诉ping程序开始ping db
+                    sprintf(buf, "%d", db_id);
+                    msg_send(inet_addr("127.0.0.1"), buf, strlen(buf));
                 }
             }
         }
-variable_recovery:
-        c_log_debug("variable_recovery and FDSET");
         FD_ZERO(&fds);
         FD_SET(skfd_slot, &fds);
         if(skfd_rt != -1) 
             FD_SET(skfd_rt, &fds);
         maxfd = skfd_rt>skfd_slot?skfd_rt:skfd_slot;
+        FD_SET(ping_fd, &fds);
+        maxfd = maxfd > ping_fd ? maxfd : ping_fd;
 	}
     return NULL;
 }
@@ -802,8 +875,11 @@ RET_RESULT hello_route(uint32_t nw_src, uint32_t nw_dst, uint32_t inport, tp_sw 
                 for(j=0;j<7;j++)rt[i+j]=rt_tmp[j];
                 sw_min = D[sw_min][2];
             }
+            Del_Rt_Set(slot_no, c_nw_src, c_nw_dst, 1, proxy_ip);
+            Del_Rt_Set(slot_no, c_nw_dst, c_nw_src, 1, proxy_ip);
             // c_log_debug("sw_min:%d\n",sw_min);
             Set_Cal_Route(c_nw_src, c_nw_dst, 1, &rt[i], proxy_ip);
+
             c_log_debug("rt %s to %s: %s", c_nw_src, c_nw_dst, &rt[i]);
             // if(inport != 65534)
             // {
@@ -871,69 +947,22 @@ RET_RESULT Set_Del_Link(int slot_no, char* redis_ip, tp_sw sw_list[SW_NUM])
     return SUCCESS;
 }
 
-void * connect_ping(void *arg UNUSED)
-{
-    char command[512] = {'\0'};
-
-    while(1){
-        while(start_sign == 0)sleep(3);
-        if(is_connDB == 0)
-        {
-            sleep(3);
-            continue;
-        }
-        sprintf(command, "ping -c 3 -W 5000 %s > /dev/null", proxy_ip);
-        if(system(command) != 0)
-        {
-            // sleep(2);
-            // sprintf(command, "ping -c 3 %s > /dev/null", proxy_ip);
-            // if(system(command) == 0)continue;
-            c_log_debug("connect_ping pthread_mutex_trylock");
-            if(pthread_mutex_trylock(&mutex)==0)
-            {
-                is_connDB = 0;
-                c_log_debug("connect_ping conn db");
-                sw_disconnected_db_times += 1;
-                //db连接断开
-                if(skfd_rt != -1)
-                {
-                    close(skfd_rt);
-                }
-                if(conn_db(slot_no) == FAILURE)   
-                {
-                    //连接所有的数据库失败
-                    sprintf(command, "ovs-vsctl del-controller s%d;ovs-vsctl set Bridge s%d stp_enable=true;ovs-vsctl del-fail-mode s%d;killall mul;killall mulcli;killall mulhello", ctrl_id, ctrl_id, ctrl_id);
-                    c_log_debug("孤岛，%s", command);
-                    while(system(command) == -1) //执行失败
-                    {
-                        c_log_debug("孤岛，设置stp失败");
-                        sleep(2);
-                    }
-                    return NULL;
-                }
-                pthread_mutex_unlock(&mutex);
-            }
-        }
-        sleep(5);
-        memset(command, 0, 30);
-    }
-    
-    return NULL;
-}
-
-void write_sw_times(int ctrl_id, int sw_closer_db_times, int sw_disconnected_db_times)
+void write_sw_times(int ctrl_id, int sw_disconnected_db_times)
 {
     FILE *fp = NULL;
-    char filename[10] = {'\0'};
+    char filename[128] = {'\0'};
 
-    sprintf(filename, "ctrl_%d_sw_times", ctrl_id+1);
+    sprintf(filename, "/home/config/mul_statistic_log/ctrl_%d_sw_times", ctrl_id);
 
     fp = fopen(filename, "w+");
 
-    if(fp == NULL) return;
+    if(fp == NULL) 
+    {
+        c_log_debug("%s open failed", filename);
+        return;
+    }
 
-    fprintf(fp, "sw_closer_db_times:%d\n", sw_closer_db_times);
-    fprintf(fp, "sw_disconnected_db_times:%d\n", sw_disconnected_db_times);
+    fprintf(fp, "%d\n", sw_disconnected_db_times);
 
     fclose(fp);
 }

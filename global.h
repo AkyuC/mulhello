@@ -35,6 +35,8 @@ typedef enum RET_RESULT
 #define CONF_FILE_PATH "/home/ctrl2db"
 #define PROXY_PORT 2345  // 数据库监听的端口
 #define SLOT_LiSTEN_PORT 12000  // 本地时间片切换时，需要知道时间片切换，收消息的套接字
+#define PING_MUL_PORT 4566  // 是否能ping通的套接字监听，ping程序会向这个数据包发送udp包
+#define PING_PORT 4567 // ping 程序接收ping的目的地址，发送db_id到这个端口
 #define BUFSIZE 512 // 套接字缓存大小
 
 #define SLOT_NUM 44
